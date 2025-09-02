@@ -1,5 +1,7 @@
 using JLD, Random, LinearAlgebra, Statistics, CSV, DataFrames, FreqTables, Distributions
 
+cd(@__DIR__) # change directory to the location of this script
+
 # Set random seed
 Random.seed!(1234);
 
@@ -72,3 +74,118 @@ function q1()
 
 return A, B, C, D
 end
+
+# Call the function
+
+
+
+#---------------------------------------[Problem 2, a]---------------------------------------
+function q2(A, B, C)
+    AB = zeros(size(A))
+    for row in 1:size(A, 1)
+        for col in 1:size(A, 2)
+            AB[row, col] = A[row, col] + B[row, col]
+        end
+    end
+    return AB
+
+    #not working for some reason this also works
+    #AB = A .* B
+
+    #---------------------------------------[Problem 2, b]---------------------------------------
+    #Write a loop that creates a column vector called Cprime which contains only the ele-
+    #ments of C that are between -5 and 5 (inclusive). Create a vector called Cprime2 which
+    #does this calculation without a loop.
+    Cprime = []
+    for c in 1:size(C, 2)
+        for r in 1:size(C, 1)
+            if C[r, c] >= -5 && C[r, c] <= 5
+                push!(Cprime, C[r, c])
+            end
+        end
+    end
+
+    #---------------------------------------[Problem 2, c]---------------------------------------
+    X = zeros(15_169, 6, 5) #15_169 is 15,169 where _ acts as the comma
+    N = size(X, 1)
+    K = size(X, 2)
+    T = size(X, 3)
+
+    #ordering of the second eimension:
+    #dummy variable
+    #continuous variable(normal)
+    #normal
+    #binomial ("discrete" normal)
+    #another binaomial
+    for i in axes(X, 1)
+        X[i, 1, :] .= 1.0
+        X[i, 5, :] .= rand(Binomial(20, 0.6))
+        X[i, 6, :] .= rand(Binomial(20, 0.5))
+        for t in axes(X,3)
+            X[i, 2, t] = rand() <= .75 * (6-t)/5
+            X[i, 3, t] = rand(Normal(15 + t - 1, 5*t-1))
+            X[i, 4, t] = rand(Normal(pi * (6 - t), 1/exp(1)))
+        end
+
+    end
+    #---------------------------------------[Problem 2, d]---------------------------------------
+    #comprehensions practice
+    β = zeros(K, T)
+    β[1, :] = [1 + 0.25 * (t-1) for t in 1:T]
+    β[2, :] = [log(t) for t in 1:T]
+    β[3, :] = [-sqrt(t) for t in 1:T]
+    β[4, :] = [exp(t) - exp(t+1) for t in 1:T]
+    β[5, :] = [t for t in 1:T]
+    β[6, :] = [t/3 for t in 1:T]
+    Y = zeros(N, T)
+    Y = [X[:, :, t] * β[:, t] .+ rand(Normal(0, 0.36), N) for t in 1:T]
+    Y = [x[:, :, t] * β[:, t] .+ rand(Normal(0, 0.36), N) for t in 1:T]
+    
+
+
+
+    return nothing
+end  
+
+function q3()
+    #----------------------------------------[problem 3, a]---------------------------------------
+    #load the dataset from the file nlsw88.csv into julia as a DataFrame
+    df = DataFrame(CSV.File("nlsw88.csv"))
+    @show df
+
+    #----------------------------------------[problem 3, b]---------------------------------------
+    #percentage never married
+    @show mean(df[:, :never_married])
+
+    #----------------------------------------[problem 3, c]---------------------------------------
+    @show freqtable(df[: , :race])
+
+    #----------------------------------------[problem 3, d]---------------------------------------
+    #create a matrix called summary stats that lists the stats
+    vars = names(df)
+    summary_stats = describe(df)
+    @show summary_stats
+
+    #----------------------------------------[problem 3, e]---------------------------------------
+    # cross tabulation of industry and occupation
+    @show freqtable(df[:, :industry], df[:, :occupation])
+
+    #----------------------------------------[problem 3, f]---------------------------------------
+    # get the mean within the groups of industry and occupation categories
+    df_sub = df[:, [:industry, :occupation, :wage]]
+    grouped = groupby(df_sub, [:industry, :occupation])
+    mean_wage = combine(grouped, :wage => mean => :mean_wage)
+    @show mean_wage
+
+    
+    return nothing
+end
+
+#call the function from q1
+A, B, C, D = q1()
+
+# call the function from q2
+q2(A, B, C)
+
+#call the function from q3
+q3()
