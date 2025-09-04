@@ -1,4 +1,4 @@
-using JLD, Random, LinearAlgebra, Statistics, CSV, DataFrames, FreqTables, Distributions
+using JLD, Random, LinearAlgebra, Statistics, CSV, DataFrames, FreqTables, Distributions, Test
 
 cd(@__DIR__) # change directory to the location of this script
 
@@ -151,7 +151,10 @@ function q3()
     #----------------------------------------[problem 3, a]---------------------------------------
     #load the dataset from the file nlsw88.csv into julia as a DataFrame
     df = DataFrame(CSV.File("nlsw88.csv"))
-    @show df
+    @show df[1:5, :] #show the first 5 rows of the dataframe
+    @show typeof(df[:, :grade])
+    #save as cleaned csv file
+    CSV.write("nlsw88_cleaned.csv", df)
 
     #----------------------------------------[problem 3, b]---------------------------------------
     #percentage never married
@@ -181,6 +184,61 @@ function q3()
     return nothing
 end
 
+
+
+#---------------------------------------[problem 4, B]---------------------------------------
+    #---------------------------------------[problem 4, C]---------------------------------------
+"""
+function matrixops(A, B)
+    performs the following operations matrices A and B:
+    1. computes the element wise product of A and B
+    2. computes the matrix product of A transpose and b
+    3. computes the sum of all elements of the sum of A and B
+"""
+    
+function matrixops(A::Array{Float64}, B::Array{Float64})
+    #part e check dimensionalityC
+    if size(A) != size(B)
+        error("matrices A and B must have the same dimensions")
+    end
+
+    #(i) eleemen wise product of A and b
+    out1 = A .* B
+    #(ii) matrix product of A' and b
+    out2 = A' * B
+    #(iii) sum of all elements of sum of A and B 
+    out3 = sum(A+B)
+    return nothing
+end
+# load firstmatrix.jld
+    #---------------------------------------[problem 4, A]---------------------------------------
+function q4()
+    #three ways to load the .jld file
+    @load "matrixpractice.jld"
+    #load("matrixpractice.jld", "A", "B", "C", "D") #specify which matrices to load
+    #@load "matrixpractice.jld" A B C D #specify which matrices to load
+    #part d of question 4
+    matrixops(A, B)
+
+    #part f of question 4
+    try
+        matrixops(A, C) #this should throw an error because the dimensions do not align
+    catch e 
+        @show e
+    end
+
+    #part g of question 4
+    #read in csv
+    nlsw88    = DataFrame(CSV.File("nlsw88_cleaned.csv"))
+    ttl_exp = convert(Array, nlsw88.ttl_exp)
+    wage    = convert(Array, nlsw88.wage)
+    matrixops(ttl_exp, wage)
+
+
+    return nothing
+end
+
+
 #call the function from q1
 A, B, C, D = q1()
 
@@ -189,3 +247,9 @@ q2(A, B, C)
 
 #call the function from q3
 q3()
+
+#call the function from q4
+q4()
+
+
+
