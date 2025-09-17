@@ -1,16 +1,14 @@
 using Optim, DataFrames, CSV, HTTP, GLM, LinearAlgebra, Random, Statistics, DataFrames, CSV, FreqTables
 
-cd(@__DIR__)
+function PS2()
+    cd(@__DIR__)
 
-#:::::::::::::::::::::::::::::::::::::::::::::::::::
-# question 1
-#:::::::::::::::::::::::::::::::::::::::::::::::::::
-f(x) = -x[1]^4-10x[1]^3-2x[1]^2-3x[1]-2
+    f(x) = -x[1]^4-10x[1]^3-2x[1]^2-3x[1]-2
 minusf(x) = x[1]^4+10x[1]^3+2x[1]^2+3x[1]+2
 startval = rand(1)   # random starting value
 result = optimize(minusf, startval, BFGS()) # what you want to optimize, the starting value, and the algorithm you want to use
-println("argmin (minimizer) is ",Optim.minimizer(result)[1])
-println("min is ",Optim.minimum(result))
+    println(Optim.minimizer(result)[1])
+    println(Optim.minimum(result))
 
 
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -27,9 +25,9 @@ function ols(beta, X, y)
 end
 
 beta_hat_ols = optimize(b -> ols(b, X, y), rand(size(X,2)), LBFGS(), Optim.Options(g_tol=1e-6, iterations=100_000, show_trace=true))
-println(beta_hat_ols.minimizer)
+    println(beta_hat_ols.minimizer)
 
-bols = inv(X'*X)*X'*y
+    bols = inv(X'*X)*X'*y
 
 #standard errors
 N = size(X, 1)
@@ -47,17 +45,25 @@ bols_lm = lm(@formula(married ~ age + white + collgrad), df)
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
 # question 3
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
-function logit(alpha, X, d)
-
-    # your turn
-
+function logit(a, X, y)
+    xalpha = X * a 
+    logp = xalpha .- log1p.(exp.(xalpha))
+    log1mp = -log1p.(exp.(xalpha))
+    loglike = -sum(y .* logp + (1 .- y) .* log1mp)
     return loglike
 end
+
+log_test_1 = optimize(a -> logit(a, X, y), zeros(size(X,2)), LBFGS(), Optim.Options(g_tol=1e-8, iterations=100_000, show_trace=true))
+
+    println(log_test_1.minimizer)
 
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
 # question 4
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
-# see Lecture 3 slides for example
+df.white = df.race.== 1
+    alpha_glm = glm(@formula(married ~ age + white + collgrad), df, Binomial(), LogitLink())
+    
+    println(coef(alpha_glm))
 
 #:::::::::::::::::::::::::::::::::::::::::::::::::::
 # question 5
@@ -72,13 +78,59 @@ df[df.occupation.==12,:occupation] .= 7
 df[df.occupation.==13,:occupation] .= 7
 freqtable(df, :occupation) # problem solved
 
+#clean df
+df = dropmissing(df, :occupation)
+
 X = [ones(size(df,1),1) df.age df.race.==1 df.collgrad.==1]
 y = df.occupation
 
-function mlogit(alpha, X, d)
+function mlogit(alpha, X, y)
+    K = size(X, 2)
+    N = length(y)
+    J = 7 
+    
+    bigY = zeros(N, J)
+    for i in 1:N
+        bigY[i, Int(y[i])] = 1
+    end
+    
+    alpha_mat = reshape(alpha, K, J-1)
+    bigAlpha = [alpha_mat zeros(K)] 
+    
+    num = zeros(N, J)
+    dem = zeros(N)
+    
+    for j in 1:J
+        num[:, j] = exp.(X * bigAlpha[:, j])
+        dem .+= num[:, j]
+    end
+    
+    P = num ./ dem
 
-    # your turn
-
+    loglike = -sum(bigY .* log.(P))
+    
     return loglike
 end
 
+alpha_init = zeros(size(X,2) * 6) 
+
+log_test_2 = optimize(alpha -> mlogit(alpha, X, y), alpha_init, LBFGS(), Optim.Options(g_tol = 1e-5, iterations = 100_000, show_trace = true))
+
+    alpha_hat_mle = log_test_2.minimizer
+    alpha_mat = reshape(alpha_hat_mle, size(X,2), 6)
+    println(alpha_mat)
+    
+    
+    return Dict(
+        "q1_minimizer" => Optim.minimizer(result),
+        "q1_minimum" => Optim.minimum(result),
+        "q2_ols" => bols,
+        "q2_ols_se" => SE,
+        "q3_logit" => log_test_1.minimizer,
+        "q4_glm" => coef(alpha_glm),
+        "q5_mlogit" => alpha_hat_mle
+    )
+end
+
+
+results = PS2()
