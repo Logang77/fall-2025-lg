@@ -1,4 +1,4 @@
-using Optim, DataFrames, CSV, HTTP, GLM, LinearAlgebra, Random, Statistics, DataFrames, CSV, FreqTables
+
 
 function PS2()
     cd(@__DIR__)
