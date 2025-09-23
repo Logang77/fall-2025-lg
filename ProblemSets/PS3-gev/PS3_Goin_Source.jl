@@ -73,6 +73,9 @@ function nested_logit_with_Z(theta, X, Z, y, nesting_structure)
     lambda = theta[end-2:end-1] # lambda_WC, lambda_BC
     gamma = theta[end]          # coefficient on Z
     
+    # Constrain lambda parameters to be positive to ensure well-behaved nested logit
+    lambda = abs.(lambda) .+ 0.01  # ensure lambda > 0
+    
     K = size(X, 2)
     J = length(unique(y))
     N = length(y)
@@ -85,44 +88,51 @@ function nested_logit_with_Z(theta, X, Z, y, nesting_structure)
     
     # Create coefficient matrix for nested structure
     # First K columns for WC nest, next K for BC nest, zeros for Other
-    bigAlpha = [repeat(alpha[1:K], 1, length(nesting_structure[1])) 
-                repeat(alpha[K+1:2K], 1, length(nesting_structure[2])) 
-                zeros(K)]
-    
-    # TODO: Implement nested logit probability calculation
-    # This is complex - refer to the formula in the problem set
+    bigAlpha = zeros(K, J)
+    bigAlpha[:, nesting_structure[1]] = repeat(reshape(alpha[1:K], K, 1), 1, length(nesting_structure[1]))
+    bigAlpha[:, nesting_structure[2]] = repeat(reshape(alpha[K+1:2K], K, 1), 1, length(nesting_structure[2]))
     
     T = promote_type(eltype(X), eltype(theta))
     num = zeros(T, N, J)
-    lidx = zeros(T, N, J)  # linear index for each choice
-    dem = zeros(T, N)
+    lidx = zeros(T, N, J)  # linear index for each choice, what's in the exp() term. our u_j
     
     # Fill in: compute linear indices for each choice
     for j = 1:J
+        utility = X*bigAlpha[:,j] .+ gamma * (Z[:,j] .- Z[:,J])
+        
         if j in nesting_structure[1]  # White collar
-            # lidx[:,j] = exp.((X*bigAlpha[:,j] .+ (Z[:,j] .- Z[:,J])*gamma) ./ lambda[1])
+            lidx[:,j] = exp.(clamp.(utility ./ lambda[1], -500, 500))  # clamp to prevent overflow
         elseif j in nesting_structure[2]  # Blue collar
-            # lidx[:,j] = exp.((X*bigAlpha[:,j] .+ (Z[:,j] .- Z[:,J])*gamma) ./ lambda[2])
+            lidx[:,j] = exp.(clamp.(utility ./ lambda[2], -500, 500))  # clamp to prevent overflow
         else  # Other
-            # lidx[:,j] = exp.(zeros(N))
+            lidx[:,j] = ones(N)  # exp(0) = 1
         end
     end
     
     # Fill in: compute numerators using nested logit formula
     for j = 1:J
         if j in nesting_structure[1]
-            # num[:,j] = lidx[:,j] .* (sum of lidx for WC nest)^(lambda[1]-1)
+             wc_sum = sum(lidx[:,nesting_structure[1]], dims = 2)
+             num[:,j] = lidx[:,j] .* (max.(wc_sum, 1e-10) .^ (lambda[1]-1))
         elseif j in nesting_structure[2]
-            # num[:,j] = lidx[:,j] .* (sum of lidx for BC nest)^(lambda[2]-1)
+             bc_sum = sum(lidx[:,nesting_structure[2]], dims = 2)
+             num[:,j] = lidx[:,j] .* (max.(bc_sum, 1e-10) .^ (lambda[2]-1))
         else
-            # num[:,j] = lidx[:,j]
+             num[:,j] = lidx[:,j]
         end
-        # dem .+= num[:,j]
     end
+    dem = sum(num, dims=2)
     
     # Fill in: compute probabilities and log-likelihood
-    # P = num ./ repeat(dem, 1, J)
-    # loglike = -sum(bigY .* log.(P))
+    P = num ./ max.(dem, 1e-10)  # prevent division by zero
+    P = max.(P, 1e-10)  # ensure probabilities are not zero for log
+    
+    loglike = -sum(bigY .* log.(P))
+    
+    # Return a large positive number if likelihood is not finite
+    if !isfinite(loglike)
+        return 1e10
+    end
     
     return loglike
 end
@@ -147,7 +157,8 @@ end
 
 function optimize_nested_logit(X, Z, y, nesting_structure)
     # Starting values: 6 alphas + 2 lambdas + 1 gamma
-    startvals = [2*rand(2*size(X,2)).-1; 1.0; 1.0; 0.1]
+    # Use smaller starting values for better numerical stability
+    startvals = [0.1*randn(2*size(X,2)); 0.8; 0.8; 0.01]
     
     # TODO: Use optimize() function for nested logit
     
@@ -180,9 +191,9 @@ function allwrap()
     # TODO: Estimate nested logit
     println("\n=== NESTED LOGIT RESULTS ===")
     nesting_structure = [[1, 2, 3], [4, 5, 6, 7]]  # WC and BC occupations
-    # nlogit_theta_hat = optimize_nested_logit(X, Z, y, nesting_structure)
-    # println("Estimates: ", nlogit_theta_hat)
+    nlogit_theta_hat = optimize_nested_logit(X, Z, y, nesting_structure)
+    println("Estimates: ", nlogit_theta_hat)
 end
 
 # Uncomment to run
-# allwrap()
+ #allwrap()
