@@ -116,121 +116,66 @@ end
 ################################################################################
 # PART 3: DYNAMIC ESTIMATION - FUTURE VALUE COMPUTATION (Question 3c)
 ################################################################################
-#=
-"""
-    compute_future_value!(FV, θ, d)
 
-Compute future value function for all states using backward recursion.
-Uses the @views and @inbounds macros for performance (cuts runtime ~50%).
-
-This is the heart of dynamic programming! We solve Bellman's equation:
-  V(s,t) = max{v₀(s,t), v₁(s,t)} + ε
-where v₁ - v₀ = θ₀ + θ₁·x + θ₂·b + β·E[V(s',t+1)|s,d=1] - β·E[V(s',t+1)|s,d=0]
-
-Key insight: We compute V for ALL possible states (not just observed ones),
-because we need E[V(s',t+1)] which requires knowing V at states we might 
-transition to in the future.
-
-Arguments:
-- FV: Pre-allocated future value array (zbin×xbin, 2, T+1) - modified in place
-- θ: Parameter vector [θ₀, θ₁, θ₂]  
-- d: Named tuple with data and grids
-
-Algorithm:
-1. Initialize FV[:,:,T+1] = 0 (no future beyond last period)
-2. Loop backwards from t=T to t=1:
-   - For each state (z, x, b):
-     * Compute v₁(z,x,b,t) = flow utility + β·E[V(s',t+1)|continue]
-     * Compute v₀(z,x,b,t) = 0 + β·E[V(s',t+1)|replace]  
-     * Store FV(z,x,b,t) = β·log(exp(v₀) + exp(v₁))
-3. This FV array is then used in likelihood computation
-
-# TODO: Implement the four nested loops for backward recursion.
-"""
 @views @inbounds function compute_future_value!(FV, θ, d)
     # FV is already initialized to zeros in the calling function
     # FV[T+1] stays at zero (terminal condition)
     
     # TODO: Loop backward over time
-    # for t in d.T:-1:1
-    #     
+     for t in d.T:-1:1
+         
     #     TODO: Loop over brand states
-    #     for b in 0:1
-    #         
+         for b in 0:1
+             
     #         TODO: Loop over route usage states (permanent characteristic)
-    #         for z in 1:d.zbin
-    #             
-    #             TODO: Loop over mileage states  
-    #             for x in 1:d.xbin
-    #                 
-    #                 # Calculate row index in transition matrix
-    #                 # This indexes the joint state (z,x)
-    #                 row = # TODO: x + (z-1)*d.xbin
-    #                 
-    #                 # Compute v₁: value of continuing with current engine
-    #                 # Flow utility: θ₀ + θ₁·mileage + θ₂·brand
-    #                 # Future value: E[V_{t+1} | don't replace, current state (z,x)]
-    #                 # 
-    #                 # The expectation is: xtran[row,:]' · FV[z's rows, b+1, t+1]
-    #                 # where "z's rows" means all x values for the given z
-    #                 v1 = # TODO: θ[1] + θ[2]*d.xval[x] + θ[3]*b + d.xtran[row,:]⋅FV[(z-1)*d.xbin+1:z*d.xbin, b+1, t+1]
-    #                 
-    #                 # Compute v₀: value of replacing engine
-    #                 # Flow utility: normalized to 0 (replacement is the reference)
-    #                 # Future value: E[V_{t+1} | replace, current z]
-    #                 # 
-    #                 # Key difference: after replacement, mileage resets to 0
-    #                 # So we use row = 1 + (z-1)*xbin (first mileage bin)
-    #                 v0 = # TODO: d.xtran[1+(z-1)*d.xbin,:]⋅FV[(z-1)*d.xbin+1:z*d.xbin, b+1, t+1]
-    #                 
-    #                 # Store future value using log-sum-exp formula
-    #                 # FV(t) = β·log(exp(v₀) + exp(v₁))
-    #                 # This is the expected value before the agent observes ε
-    #                 FV[row, b+1, t] = # TODO: d.β * log(exp(v1) + exp(v0))
-    #                 
-    #             end
-    #         end
-    #     end
-    # end
+             for z in 1:d.zbin
+             
+             # Loop over mileage states  
+             for x in 1:d.xbin
+                 
+                 # Calculate row index in transition matrix
+                     # This indexes the joint state (z,x)
+                     row = x + (z-1)*d.xbin
+                    
+                     # Compute v₁: value of continuing with current engine
+                     # Flow utility: θ₀ + θ₁·mileage + θ₂·brand
+                     # Future value: E[V_{t+1} | don't replace, current state (z,x)]
+                     # 
+                     # The expectation is: xtran[row,:]' · FV[z's rows, b+1, t+1]
+                     # where "z's rows" means all x values for the given z
+                     v1 = θ[1] + θ[2]*d.xval[x] + θ[3]*b + d.xtran[row,:]⋅FV[(z-1)*d.xbin+1:z*d.xbin, b+1, t+1]
+                     
+                     # Compute v₀: value of replacing engine
+                     # Flow utility: normalized to 0 (replacement is the reference)
+                     # Future value: E[V_{t+1} | replace, current z]
+                     # 
+                     # Key difference: after replacement, mileage resets to 0
+                     # So we use row = 1 + (z-1)*xbin (first mileage bin)
+                     v0 = d.xtran[1+(z-1)*d.xbin,:]⋅FV[(z-1)*d.xbin+1:z*d.xbin, b+1, t+1]
+                     
+                     # Store future value using log-sum-exp formula
+                     # FV(t) = β·log(exp(v₀) + exp(v₁))
+                     # This is the expected value before the agent observes ε
+                     FV[row, b+1, t] = d.β * log(exp(v1) + exp(v0)) + d.β * Base.MathConstants.eulergamma
+                     
+                     
+                     
+                    
+                     
+                     
+                 end
+              end
+          end
+      end
     
     println("TODO: Implement backward recursion loops")
-    return nothing
+    return FV
 end
-=#
+
 ################################################################################
 # PART 4: DYNAMIC ESTIMATION - LOG LIKELIHOOD (Question 3d)
 ################################################################################
-#=
-"""
-    log_likelihood_dynamic(θ, d)
 
-Compute the log likelihood for the dynamic model.
-Uses the @views and @inbounds macros for performance.
-
-Now we use the pre-computed FV array, but only for the states we actually 
-observe in the data. The likelihood is:
-
-  ℓ(θ) = Σᵢ Σₜ [yᵢₜ·log(P₁ᵢₜ) + (1-yᵢₜ)·log(P₀ᵢₜ)]
-
-where P₁ᵢₜ = exp(v₁-v₀)/(1+exp(v₁-v₀)) is the probability of continuing.
-
-The conditional value difference is:
-  v₁ - v₀ = θ₀ + θ₁·xᵢₜ + θ₂·bᵢ + β·[E[V|continue] - E[V|replace]]
-
-Key insight: The future value difference can be computed as:
-  E[V|continue] - E[V|replace] = (xtran[row1,:] - xtran[row0,:])' · FV[...]
-This works because both use the same FV array for s', just different 
-transition probabilities.
-
-Arguments:
-- θ: Parameter vector [θ₀, θ₁, θ₂]
-- d: Named tuple with data and pre-computed FV
-
-Returns: 
-- Scalar log likelihood value (we return negative for minimization)
-
-# TODO: Implement the likelihood computation using observed states.
-"""
 @views @inbounds function log_likelihood_dynamic(θ, d)
     # First, compute future values for all states given current θ
     FV = zeros(d.zbin * d.xbin, 2, d.T + 1)
@@ -240,80 +185,61 @@ Returns:
     loglike = 0.0
     
     # TODO: Loop over individuals
-    # for i in 1:d.N
-    #     
-    #     # Pre-compute the row index for replacement (mileage = 0)
-    #     # This is constant across time for each individual
-    #     row0 = # TODO: (d.Zstate[i] - 1) * d.xbin + 1
-    #     
+     for i in 1:d.N
+         
+         # Pre-compute the row index for replacement (mileage = 0)
+         # This is constant across time for each individual
+         row0 = (d.Zstate[i] - 1) * d.xbin + 1
+         
     #     TODO: Loop over time periods
-    #     for t in 1:d.T
-    #         
+         for t in 1:d.T
+             
     #         # Get row index for current state (observed mileage and route usage)
-    #         row1 = # TODO: d.Xstate[i,t] + (d.Zstate[i] - 1) * d.xbin
-    #         
-    #         # Compute conditional value difference: v₁ - v₀
-    #         # 
+             row1 = d.Xstate[i,t] + (d.Zstate[i] - 1) * d.xbin
+             
+             # Compute conditional value difference: v₁ - v₀
+             # 
     #         # Part 1: Flow utility difference
-    #         #   v₁ has: θ₀ + θ₁·x + θ₂·b
-    #         #   v₀ has: 0 (normalized)
-    #         #   So difference is just the flow utility
-    #         flow_diff = # TODO: θ[1] + θ[2]*d.X[i,t] + θ[3]*d.B[i]
-    #         
-    #         # Part 2: Expected future value difference
-    #         #   E[V|continue] uses transition probs from current state (row1)
-    #         #   E[V|replace] uses transition probs from mileage=0 (row0)
-    #         #   Both look at same FV array, just different transition weights
-    #         # 
-    #         # This is the elegant part: we DIFFERENCE the transition matrices!
-    #         ev_diff = # TODO: (d.xtran[row1,:] .- d.xtran[row0,:])⋅FV[row0:row0+d.xbin-1, d.B[i]+1, t+1]
-    #         
-    #         # Total conditional value difference
-    #         v_diff = # TODO: flow_diff + d.β * ev_diff
-    #         
-    #         # Compute choice probabilities using logit formula
-    #         # P(Y=1) = exp(v_diff) / (1 + exp(v_diff))
-    #         # P(Y=0) = 1 / (1 + exp(v_diff))
-    #         
-    #         # Add to log likelihood
-    #         # Efficient form: ℓ = Σ[Y·v_diff - log(1 + exp(v_diff))]
-    #         # This is numerically stable and avoids computing P₀ and P₁ separately
-    #         loglike += # TODO: (d.Y[i,t] == 1) * v_diff - log(1 + exp(v_diff))
-    #         
-    #     end
-    # end
+             #   v₁ has: θ₀ + θ₁·x + θ₂·b
+             #   v₀ has: 0 (normalized)
+             #   So difference is just the flow utility
+             flow_diff = θ[1] + θ[2]*d.X[i,t] + θ[3]*d.B[i]
+             
+             # Part 2: Expected future value difference
+             #   E[V|continue] uses transition probs from current state (row1)
+             #   E[V|replace] uses transition probs from mileage=0 (row0)
+             #   Both look at same FV array, just different transition weights
+             # 
+             # This is the elegant part: we DIFFERENCE the transition matrices!
+             ev_diff = (d.xtran[row1,:] .- d.xtran[row0,:])⋅FV[row0:row0+d.xbin-1, d.B[i]+1, t+1]
+             
+             # Total conditional value difference
+             v_diff = flow_diff + d.β * ev_diff #we don't need β eulergamma because the v is already differenced
+             
+             # Compute choice probabilities using logit formula
+             # P(Y=1) = exp(v_diff) / (1 + exp(v_diff))
+             # P(Y=0) = 1 / (1 + exp(v_diff))
+             
+             # Add to log likelihood
+             # Efficient form: ℓ = Σ[Y·v_diff - log(1 + exp(v_diff))]
+             # This is numerically stable and avoids computing P₀ and P₁ separately
+             loglike += (d.Y[i,t] == 1) * v_diff - log(1 + exp(v_diff))
+             
+         end
+     end
     
-    println("TODO: Implement likelihood computation")
+    println("Log likelihood evaluation completed: LL = ", loglike)
     
     # Return NEGATIVE log likelihood (Optim minimizes)
     return -loglike
 end
 
-=#
+
 ################################################################################
 # PART 5: OPTIMIZATION WRAPPER (Question 3e-h)
 ################################################################################
 
-"""
-    estimate_dynamic_model(d; θ_start=nothing)
 
-Estimate the dynamic discrete choice model using MLE.
-
-This function:
-1. Sets up starting values (use static estimates if available)
-2. Defines objective function (negative log likelihood)
-3. Calls Optim to minimize
-4. Returns results
-
-Arguments:
-- d: Named tuple with data
-- θ_start: Starting values for optimization (if nothing, uses random)
-
-Returns:
-- Optimization result object from Optim
-
-TODO: Set up and run the optimization.
-"""
 function estimate_dynamic_model(d; θ_start=nothing)
     println("="^70)
     println("DYNAMIC MODEL ESTIMATION")
@@ -332,32 +258,32 @@ function estimate_dynamic_model(d; θ_start=nothing)
     objective = θ -> log_likelihood_dynamic(θ, d)
     
     # TODO: Time the likelihood evaluation (good practice!)
-    # println("\nTiming likelihood evaluation...")
-    # @time objective(θ_start)
-    # @time objective(θ_start)
+     println("\nTiming likelihood evaluation...")
+     @time objective(θ_start)
+     @time objective(θ_start)
     
     # TODO: Run optimization
-    # println("\nOptimizing (this may take several minutes)...")
-    # result = optimize(objective, θ_start, LBFGS(), 
-    #                   Optim.Options(g_tol=1e-5, 
-    #                                iterations=100_000, 
-    #                                show_trace=true,
-    #                                show_every=10))
+     println("\nOptimizing (this may take several minutes)...")
+     result = optimize(objective, θ_start, LBFGS(), 
+                       Optim.Options(g_tol=1e-5, 
+                                    iterations=100_000, 
+                                    show_trace=true,
+                                    show_every=10))
     
     println("\nTODO: Implement optimization call")
     
     # TODO: Display results
-    # println("\n" * "="^70)
-    # println("RESULTS")
-    # println("="^70)
-    # println("Parameter estimates:")
-    # println("  θ₀ (constant):     ", round(result.minimizer[1], digits=4))
-    # println("  θ₁ (mileage):      ", round(result.minimizer[2], digits=4))
-    # println("  θ₂ (brand):        ", round(result.minimizer[3], digits=4))
-    # println("\nLog likelihood:      ", round(-result.minimum, digits=2))
-    # println("Converged:           ", Optim.converged(result))
-    # println("Iterations:          ", Optim.iterations(result))
-    # println("="^70)
+     println("\n" * "="^70)
+     println("RESULTS")
+     println("="^70)
+     println("Parameter estimates:")
+     println("  θ₀ (constant):     ", round(result.minimizer[1], digits=4))
+     println("  θ₁ (mileage):      ", round(result.minimizer[2], digits=4))
+     println("  θ₂ (brand):        ", round(result.minimizer[3], digits=4))
+     println("\nLog likelihood:      ", round(-result.minimum, digits=2))
+     println("Converged:           ", Optim.converged(result))
+     println("Iterations:          ", Optim.iterations(result))
+     println("="^70)
     
     return nothing
 end
@@ -416,7 +342,7 @@ function main()
     println("Route usage bins: ", d.zbin)
     println("Total state space size: ", d.xbin * d.zbin)
     println("Discount factor (β): ", d.β)
-    return #returns function early (MOVE AS YOU GO) 
+    # return #returns function early (MOVE AS YOU GO) 
     # Estimate dynamic model
     println("\nSetting up dynamic estimation...")
     estimate_dynamic_model(d, θ_start=θ_start_dynamic)
