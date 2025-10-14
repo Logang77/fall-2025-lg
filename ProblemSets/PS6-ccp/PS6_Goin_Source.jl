@@ -7,7 +7,17 @@ This starter code provides the structure for implementing the dynamic discrete
 choice estimation using Conditional Choice Probabilities (CCPs).
 
 Instructions:
-- Fill in the sections marked with TODO
+- Fill in the    # Set parameters
+    β = 0.9  # Discount factor
+    
+    # Define grid parameters (matching PS5)
+    include("create_grids.jl")
+    zval, zbin, xval, xbin, xtran = create_grids()
+    
+    # Step 1: Load and reshape data
+    println("\nStep 1: Loading and reshaping data...")
+    url = "https://raw.githubusercontent.com/OU-PhD-Econometrics/fall-2025/master/ProblemSets/PS5-ddc/busdataBeta0.csv" 
+    df_long = load_and_reshape_data(url)rked with TODO
 - Test your functions as you build them
 - Use the structure provided but feel free to refactor if needed
 =#
@@ -119,20 +129,17 @@ Construct the state space grid for all possible states.
 # Returns
 - `state_df::DataFrame`: Data frame with all possible state combinations
 
-# TODO:
-- Create vectors using kron(ones(zbin), xval) for Odometer
-- Create vectors using kron(ones(xbin), zval) for RouteUsage
-- Initialize Branded and time to zeros
+
 """
-function construct_state_space(xbin::Int, zbin::Int, xval::Vector, zval::Vector)
+function construct_state_space(xbin::Int, zbin::Int, xval::Vector, zval::Vector, xtran::Matrix)
     # TODO: Implement state space construction
     # Hint: kron() is the Kronecker product function
     
     state_df = DataFrame(
-        # Odometer = ...,
-        # RouteUsage = ...,
-        # Branded = ...,
-        # time = ...
+         Odometer = kron(ones(zbin), xval),
+         RouteUsage = kron(zval, ones(xbin)),
+         Branded = zeros(size(xtran, 1)),
+         time = zeros(size(xtran, 1))
     )
     
     return state_df
@@ -160,32 +167,31 @@ Compute future value terms using CCPs from the flexible logit.
 # Returns
 - `FV::Array{Float64,3}`: Future value array (states × brand × time)
 
-# TODO:
-- Initialize FV as zeros(size(xtran,1), 2, T+1)
-- Loop over t = 2 to T
-- Loop over brand states b ∈ {0,1}
-- Update state_df with current t and b values
-- Use predict() to get p0 (probability of replacement)
-- Store -β * log(p0) in FV[:, b+1, t+1]
+
 """
 function compute_future_values(state_df::DataFrame, 
-                                flex_logit::GeneralizedLinearModel,
+                                flex_logit,
                                 xtran::Matrix, 
-                                xbin::Int, 
+                                xbin::Int,
+                                zbin::Int, 
                                 T::Int, 
                                 β::Float64)
     
     # TODO: Initialize the future value array
-    # FV = zeros(???, 2, T+1)
+    FV = zeros(xbin*zbin, 2, T+1)
     
     # TODO: Nested loops over time and brand
-    # for t in 2:T
-    #     for b in 0:1
-    #         # Update state_df
-    #         # Compute p0 using predict()
-    #         # Store -β * log.(p0) in FV
-    #     end
-    # end
+     for t in 2:T
+         for b in 0:1
+            # Update state_df
+             @with(state_df, :time .= t)
+             @with(state_df, :Branded .= b)
+             # Compute p0 using predict()
+             p0 = 1 .- convert(Array{Float64}, predict(flex_logit, state_df))
+             # Store -β * log.(p0) in FV
+             FV[:, b+1, t] = -β * log.(p0)
+         end
+     end
     
     return FV
 end
@@ -224,29 +230,30 @@ function compute_fvt1(df_long::DataFrame,
                       xtran::Matrix,
                       Xstate::Vector,
                       Zstate::Vector,
-                      xbin::Int)
+                      xbin::Int,
+                      B)
     
     # Get dimensions
     N = length(unique(df_long.bus_id))  # Adjust column name as needed
-    T = # TODO: determine T from data
+    T = 20
     
     # TODO: Initialize FVT1
-    # FVT1 = zeros(N, T)
+     FVT1 = zeros(N, T)
     
     # TODO: Loop over observations and time
-    # for i in 1:N
-    #     for t in 1:T
-    #         # Compute row0 and row1 indices
-    #         # row0 = (Xstate[i]-1)*zbin + Zstate[i]
-    #         # row1 = (Xstate[i])*zbin + Zstate[i]
-    #         
-    #         # Compute future value contribution
-    #         # FVT1[i,t] = ...
-    #     end
-    # end
+     for i in 1:N
+        row0 = (Zstate[i]-1)*xbin + 1
+         for t in 1:T
+             # Compute row0 and row1 indices
+              row1 = row0 + Xstate[i,t] - 1
+             
+             # Compute future value contribution
+              FVT1[i,t] = dot((xtran[row1, :] .- xtran[row0, :]), FV[row0:row0 + xbin - 1, B[i]+1, t+1])
+         end
+     end
     
     # TODO: Convert to long format
-    # fvt1_long = FVT1'[:]
+    fvt1_long = FVT1'[:]
     
     return fvt1_long
 end
@@ -271,14 +278,14 @@ Estimate structural parameters θ using GLM with offset.
 """
 function estimate_structural_params(df_long::DataFrame, fvt1::Vector)
     # TODO: Add future value to data frame
-    # df_long = @transform(df_long, fv = fvt1)
+     df_long = @transform(df_long, :fv = fvt1)
     
     # TODO: Estimate structural model
-    # theta_hat = glm(@formula(Y ~ Odometer + Branded), 
-    #                 df_long, 
-    #                 Binomial(), 
-    #                 LogitLink(), 
-    #                 offset=df_long.fv)
+     theta_hat = glm(@formula(Y ~ Odometer + Branded), 
+                     df_long, 
+                     Binomial(), 
+                     LogitLink(), 
+                     offset=df_long.fv)
     
     return theta_hat
 end
@@ -307,10 +314,9 @@ function main()
     # Set parameters
     β = 0.9  # Discount factor
     
-    # TODO: Define grid parameters (xbin, zbin, xval, zval)
-    # These should match what you used in PS5
-
+    # Define grid parameters (matching PS5)
     include("create_grids.jl")
+    zval, zbin, xval, xbin, xtran = create_grids()
     
     # Step 1: Load and reshape data
     println("\nStep 1: Loading and reshaping data...")
@@ -322,27 +328,30 @@ function main()
     println("\nStep 2: Estimating flexible logit...")
     flexlogitresults = estimate_flexible_logit(df_long)
     println(flexlogitresults)
-    return
+    
     
     # Step 3a: Construct state transition matrices
     println("\nStep 3a: Constructing state transition matrices...")
-    # TODO: Reuse code from PS5 to construct xtran
+    # Transition matrix already created by create_grids()
     
     # Step 3b: Construct state space
     println("\nStep 3b: Constructing state space...")
-    # TODO: Call construct_state_space()
+    statedf = construct_state_space(xbin, zbin, xval, zval, xtran)
+    
     
     # Step 3c: Compute future values
     println("\nStep 3c: Computing future values...")
-    # TODO: Call compute_future_values()
-    
+    FV = compute_future_values(statedf, flexlogitresults, xtran, xbin, zbin, 20, β)
+
     # Step 3d: Map to actual data
     println("\nStep 3d: Mapping future values to data...")
-    # TODO: Call compute_fvt1()
+    efvt1 = compute_fvt1(df_long, FV, xtran, df_long.Odometer, df_long.RouteUsage, xbin, df_long.Branded)
+
+    
     
     # Step 3e: Estimate structural parameters
     println("\nStep 3e: Estimating structural parameters...")
-    # TODO: Call estimate_structural_params()
+    estimates = estimate_structural_params(df_long, efvt1)
     
     # Print results
     println("\n" * "="^60)
