@@ -1,27 +1,6 @@
-#=
-Problem Set 6 - Starter Code
-ECON 6343: Econometrics III
-Rust (1987) Bus Engine Replacement Model - CCP Estimation
 
-This starter code provides the structure for implementing the dynamic discrete
-choice estimation using Conditional Choice Probabilities (CCPs).
-
-Instructions:
-- Fill in the    # Set parameters
-    β = 0.9  # Discount factor
-    
-    # Define grid parameters (matching PS5)
-    include("create_grids.jl")
-    zval, zbin, xval, xbin, xtran = create_grids()
-    
-    # Step 1: Load and reshape data
-    println("\nStep 1: Loading and reshaping data...")
-    url = "https://raw.githubusercontent.com/OU-PhD-Econometrics/fall-2025/master/ProblemSets/PS5-ddc/busdataBeta0.csv" 
-    df_long = load_and_reshape_data(url)rked with TODO
-- Test your functions as you build them
-- Use the structure provided but feel free to refactor if needed
-=#
-
+# Read the file to compute transition probabilities
+include("create_grids.jl")
 
 
 #========================================
@@ -38,13 +17,10 @@ Load the bus data from PS5 and reshape to long panel format.
 
 # Returns
 - `df_long::DataFrame`: Long panel format with columns for bus ID, time, and decision variables
-
-
 """
 function load_and_reshape_data(url::String)
-    # TODO: Implement data loading
-    # Hint: Use CSV.read() and HTTP.get()
-   df = CSV.read(HTTP.get(url).body, DataFrame)
+    # Load data
+    df = CSV.read(HTTP.get(url).body, DataFrame)
     
     # Create bus id variable
     df = @transform(df, :bus_id = 1:size(df,1))
@@ -72,11 +48,39 @@ function load_and_reshape_data(url::String)
     dfx_long = @transform(dfx_long, :time = kron(collect(1:20), ones(size(df,1))))
     select!(dfx_long, Not(:variable))
     
-    # Join reshaped dataframes back together
+    # Next reshape the odometer variable (Odo1-Odo20)
+    dfx = @select(df, :bus_id, :Odo1, :Odo2, :Odo3, :Odo4, :Odo5, :Odo6, :Odo7, 
+                      :Odo8, :Odo9, :Odo10, :Odo11, :Odo12, :Odo13, :Odo14, :Odo15,
+                      :Odo16, :Odo17, :Odo18, :Odo19, :Odo20)
+    dfx_long = DataFrames.stack(dfx, Not([:bus_id]))
+    rename!(dfx_long, :value => :Odometer)
+    dfx_long = @transform(dfx_long, :time = kron(collect(1:20), ones(size(df,1))))
+    select!(dfx_long, Not(:variable))
+    
+    # Reshape the mileage state variable (Xst1-Xst20)
+    dfxst = @select(df, :bus_id, :Xst1, :Xst2, :Xst3, :Xst4, :Xst5, :Xst6, :Xst7,
+                        :Xst8, :Xst9, :Xst10, :Xst11, :Xst12, :Xst13, :Xst14, :Xst15,
+                        :Xst16, :Xst17, :Xst18, :Xst19, :Xst20)
+    dfxst_long = DataFrames.stack(dfxst, Not([:bus_id]))
+    rename!(dfxst_long, :value => :Xstate)
+    dfxst_long = @transform(dfxst_long, :time = kron(collect(1:20), ones(size(df,1))))
+    select!(dfxst_long, Not(:variable))
+    
+    # Add the route usage state variable (Zst - constant per bus)
+    dfzst = @select(df, :bus_id, :Zst)
+    
+    # Join all reshaped dataframes back together
     df_long = leftjoin(dfy_long, dfx_long, on = [:bus_id, :time])
+    df_long = leftjoin(df_long, dfxst_long, on = [:bus_id, :time])
+    df_long = leftjoin(df_long, dfzst, on = [:bus_id])
     sort!(df_long, [:bus_id, :time])
     
-    return df_long
+    # Get Xstate and Zstate as arrays for later use
+    Xstate = Matrix(df[:, [Symbol("Xst$i") for i in 1:20]])
+    Zstate = Vector(df[:, :Zst])
+    Branded = Vector(df[:, :Branded])
+    
+    return df_long, Xstate, Zstate, Branded
 end
 
 
@@ -94,22 +98,13 @@ Estimate a flexible logit model with fully interacted terms up to 7th order.
 
 # Returns
 - Fitted GLM model object
-
-# TODO:
-- Create squared terms for continuous variables
-- Use GLM with formula syntax to specify fully interacted model
-- Remember: Odometer * RouteUsage * Branded * time means all interactions up to the product of all four
 """
 function estimate_flexible_logit(df::DataFrame)
-
-
-    flex_logit = glm(@formula(Y ~ Odometer * Odometer * RouteUsage * RouteUsage * Branded * time * time),
-     df, Binomial(), LogitLink())
-
+    flex_logit = glm(@formula(Y ~ Odometer * Odometer * RouteUsage * RouteUsage * Branded * time * time), 
+                    df, Binomial(), LogitLink())
     
     return flex_logit
 end
-
 
 #========================================
 QUESTION 3: CCP-Based Estimation
@@ -128,23 +123,17 @@ Construct the state space grid for all possible states.
 
 # Returns
 - `state_df::DataFrame`: Data frame with all possible state combinations
-
-
 """
 function construct_state_space(xbin::Int, zbin::Int, xval::Vector, zval::Vector, xtran::Matrix)
-    # TODO: Implement state space construction
-    # Hint: kron() is the Kronecker product function
-    
     state_df = DataFrame(
-         Odometer = kron(ones(zbin), xval),
-         RouteUsage = kron(zval, ones(xbin)),
-         Branded = zeros(size(xtran, 1)),
-         time = zeros(size(xtran, 1))
+        Odometer = kron(ones(zbin), xval),
+        RouteUsage = kron(zval, ones(xbin)),
+        Branded = zeros(size(xtran, 1)),
+        time = zeros(size(xtran, 1))
     )
     
     return state_df
 end
-
 
 """
     compute_future_values(state_df::DataFrame, 
@@ -166,32 +155,30 @@ Compute future value terms using CCPs from the flexible logit.
 
 # Returns
 - `FV::Array{Float64,3}`: Future value array (states × brand × time)
-
-
 """
 function compute_future_values(state_df::DataFrame, 
                                 flex_logit,
                                 xtran::Matrix, 
-                                xbin::Int,
+                                xbin::Int, 
                                 zbin::Int, 
                                 T::Int, 
                                 β::Float64)
     
-    # TODO: Initialize the future value array
+    # Initialize the future value array
     FV = zeros(xbin*zbin, 2, T+1)
     
-    # TODO: Nested loops over time and brand
-     for t in 2:T
-         for b in 0:1
+    # Nested loops over time and brand
+    for t in 2:T
+        for b in 0:1
             # Update state_df
-             @with(state_df, :time .= t)
-             @with(state_df, :Branded .= b)
-             # Compute p0 using predict()
-             p0 = 1 .- convert(Array{Float64}, predict(flex_logit, state_df))
-             # Store -β * log.(p0) in FV
-             FV[:, b+1, t] = -β * log.(p0)
-         end
-     end
+            @with(state_df, :time .= t)
+            @with(state_df, :Branded .= b)
+            # Compute p0 using predict()
+            p0 = 1 .- convert(Array{Float64}, predict(flex_logit, state_df))
+            # Store -β * log.(p0) in FV
+            FV[:, b+1, t] = -β * log.(p0)
+        end
+    end
     
     return FV
 end
@@ -217,19 +204,12 @@ Map future values from state space to actual data.
 
 # Returns
 - `FVT1::Vector`: Future value term for each observation in long format
-
-# TODO:
-- Initialize FVT1 matrix to store results
-- Loop over observations i and time periods t
-- Compute row indices in xtran based on Xstate[i] and Zstate[i]
-- Calculate FVT1[i,t] = (xtran[row1,:] - xtran[row0,:])'* FV[row0:row0+xbin-1, B[i]+1, t+1]
-- Convert to long format vector
 """
 function compute_fvt1(df_long::DataFrame, 
                       FV::Array{Float64,3},
                       xtran::Matrix,
-                      Xstate::Vector,
-                      Zstate::Vector,
+                      Xstate,
+                      Zstate,
                       xbin::Int,
                       B)
     
@@ -237,27 +217,24 @@ function compute_fvt1(df_long::DataFrame,
     N = length(unique(df_long.bus_id))  # Adjust column name as needed
     T = 20
     
-    # TODO: Initialize FVT1
-     FVT1 = zeros(N, T)
+    # Initialize FVT1
+    FVT1 = zeros(N, T)
     
-    # TODO: Loop over observations and time
-     for i in 1:N
+    # Loop over observations and time (over states that were visited)
+    for i in 1:N
         row0 = (Zstate[i]-1)*xbin + 1
-         for t in 1:T
-             # Compute row0 and row1 indices
-              row1 = row0 + Xstate[i,t] - 1
-             
-             # Compute future value contribution
-              FVT1[i,t] = dot((xtran[row1, :] .- xtran[row0, :]), FV[row0:row0 + xbin - 1, B[i]+1, t+1])
-         end
-     end
+        for t in 1:T
+            row1 = row0 + Xstate[i,t] - 1
+            # Compute future value contribution
+            FVT1[i,t] =(xtran[row1, :] .- xtran[row0, :])⋅FV[row0:row0+xbin-1, B[i]+1, t+1]
+        end
+    end
     
-    # TODO: Convert to long format
+    # Reshape to long format
     fvt1_long = FVT1'[:]
     
     return fvt1_long
 end
-
 
 """
     estimate_structural_params(df_long::DataFrame, fvt1::Vector)
@@ -271,21 +248,17 @@ Estimate structural parameters θ using GLM with offset.
 # Returns
 - Fitted GLM model with structural parameters
 
-# TODO:
-- Add fvt1 as a column to df_long
-- Estimate logit with Odometer and Branded as regressors
-- Use offset argument to include future value with coefficient = 1
 """
 function estimate_structural_params(df_long::DataFrame, fvt1::Vector)
-    # TODO: Add future value to data frame
-     df_long = @transform(df_long, :fv = fvt1)
+    # Add future value to data frame
+    df_long = @transform(df_long, :fv = fvt1)
     
-    # TODO: Estimate structural model
-     theta_hat = glm(@formula(Y ~ Odometer + Branded), 
-                     df_long, 
-                     Binomial(), 
-                     LogitLink(), 
-                     offset=df_long.fv)
+    # Estimate structural model
+    theta_hat = glm(@formula(Y ~ Odometer + Branded), 
+                    df_long, 
+                    Binomial(), 
+                    LogitLink(), 
+                    offset=df_long.fv)
     
     return theta_hat
 end
@@ -314,40 +287,36 @@ function main()
     # Set parameters
     β = 0.9  # Discount factor
     
-    # Define grid parameters (matching PS5)
-    include("create_grids.jl")
-    zval, zbin, xval, xbin, xtran = create_grids()
-    
     # Step 1: Load and reshape data
     println("\nStep 1: Loading and reshaping data...")
-    url = "https://raw.githubusercontent.com/OU-PhD-Econometrics/fall-2025/master/ProblemSets/PS5-ddc/busdata.csv" 
-    df_long = load_and_reshape_data(url)
-    
+    url = "https://raw.githubusercontent.com/OU-PhD-Econometrics/fall-2025/master/ProblemSets/PS5-ddc/busdata.csv"
+    df_long, Xstate, Zstate, Branded = load_and_reshape_data(url)
+    println("Observations: ", nrow(df_long))
+    println("First few rows:")
+    println(first(df_long, 5))
     
     # Step 2: Estimate flexible logit
     println("\nStep 2: Estimating flexible logit...")
     flexlogitresults = estimate_flexible_logit(df_long)
     println(flexlogitresults)
     
-    
     # Step 3a: Construct state transition matrices
     println("\nStep 3a: Constructing state transition matrices...")
-    # Transition matrix already created by create_grids()
+    # Create state grids
+    zval, zbin, xval, xbin, xtran = create_grids()
     
     # Step 3b: Construct state space
     println("\nStep 3b: Constructing state space...")
     statedf = construct_state_space(xbin, zbin, xval, zval, xtran)
     
-    
+    println(typeof(flexlogitresults))
     # Step 3c: Compute future values
     println("\nStep 3c: Computing future values...")
     FV = compute_future_values(statedf, flexlogitresults, xtran, xbin, zbin, 20, β)
-
+    
     # Step 3d: Map to actual data
     println("\nStep 3d: Mapping future values to data...")
-    efvt1 = compute_fvt1(df_long, FV, xtran, df_long.Odometer, df_long.RouteUsage, xbin, df_long.Branded)
-
-    
+    efvt1 = compute_fvt1(df_long, FV, xtran, Xstate, Zstate, xbin, Branded)
     
     # Step 3e: Estimate structural parameters
     println("\nStep 3e: Estimating structural parameters...")
@@ -357,10 +326,7 @@ function main()
     println("\n" * "="^60)
     println("RESULTS")
     println("="^60)
-    # TODO: Print coefficient estimates and standard errors
+    println(estimates)
     
     return nothing
 end
-
-# Run the estimation (uncomment when ready to test)
-# @time main()
