@@ -118,9 +118,9 @@ function mlogit_mle(α, X, y)
      # P[i,j] = exp(X[i,:]'β_j) / sum_k(exp(X[i,:]'β_k))
     # Hint: Use broadcasting and eachrow
      P = exp.(X*bigα) ./ sum.(eachrow(exp.(X*bigα))) # each row will iterate over each row. Easier than above!
-    
+
     # TODO: Compute negative log-likelihood: -Σ_i Σ_j d_ij * log(P_ij)
-     loglike = -sum(bigY .* log(p))
+     loglike = -sum(bigY .* log.(P))
     
     return loglike
 end
@@ -227,33 +227,35 @@ function sim_logit(N=100_000, J=4)
     # TODO: Generate X matrix
     # Include intercept, and K-1 other covariates with different distributions
     # Example: X = hcat(ones(N), randn(N), 2 .+ 2 .* randn(N))
-    # X = ...
+     X = hcat(ones(N), randn(N), rand(N) .> 0.5, 10 .* rand(N))
     
     # TODO: Create coefficient matrix β (dimension K×J)
     # Last column should be zeros (normalization)
     # Example for J=4: β = hcat([1, -1, 0.5], [-2, 0.5, 0.3], [0, -0.5, 2], zeros(3))
     if J == 4
-        # β = ...
+         β = hcat([1, -1, 0.5, -0.5], [0, 0.5, 0.3, 2], [0, -0.5, 2, 0.5], zeros(4))
     else
         # Generate random coefficients
-        # β = ...
+         β = -2 .+ 4 .* rand(size(X,2), J)
+         β[:, end] = 0
     end
     
     # TODO: Compute choice probabilities P (dimension N×J)
     # P_ij = exp(X_i'β_j) / Σ_k exp(X_i'β_k)
-    # P = ...
-    
+     P = exp.(X*β) ./ sum.(eachrow(exp.(X*β))) 
+     @assert size(P) == (N, J)
     # TODO: Draw uniform random variables
-    # draw = rand(N)
+     draw = rand(N) #flipping our coin, check notes if forgot
     
     # TODO: Generate choices based on cumulative probabilities
     # For each person i, find j such that:
     # Σ_{k=j}^J P_ik > ε_i
     Y = zeros(N)
-    # for j = 1:J
-    #     # Hint: sum(P[:,j:J]; dims=2) gives cumulative probabilities
-    #     # Y += ...
-    # end
+     for j = 1:J
+         # Hint: sum(P[:,j:J]; dims=2) gives cumulative probabilities
+         
+          Y += sum(P[:, j:J]; dims = 2) .> draw
+     end
     
     return Y, X
 end
@@ -271,16 +273,22 @@ This is often simpler and more numerically stable than the inverse CDF method.
 """
 function sim_logit_w_gumbel(N=100_000, J=4)
     # TODO: Generate X and β (same as above)
-    # X = ...
-    # β = ...
+    X = hcat(ones(N), randn(N), rand(N) .> 0.5, 10 .* rand(N))
+     if J == 4
+         β = hcat([1, -1, 0.5, -0.5], [0, 0.5, 0.3, 2], [0, -0.5, 2, 0.5], zeros(4))
+    else
+        # Generate random coefficients
+         β = -2 .+ 4 .* rand(size(X,2), J)
+         β[:, end] = 0
+    end
     
     # TODO: Draw Gumbel errors
-    # ε = rand(Gumbel(0,1), N, J)
+     ε = rand(Gumbel(0,1), N, J)
     
     # TODO: Choose alternative that maximizes utility
     # Y_i = argmax_j (X_i'β_j + ε_ij)
     # Hint: Use argmax.(eachrow(...))
-    # Y = ...
+     Y = argmax.(eachrow(X*β .+ ϵ))
     
     return Y, X
 end
@@ -314,38 +322,41 @@ function mlogit_smm_overid(α, X, y, D)
     N = length(y)
     
     # TODO: Create actual choice indicators
-    #bigY = zeros(N, J)
-    # for j = 1:J
-    #     bigY[:,j] = 
-    # end
+    bigY = zeros(N, J)
+     for j = 1:J
+         bigY[:,j] = y .== j
+     end
     
     # TODO: Initialize simulated choice frequencies
     bigỸ = zeros(N, J)
     
     # TODO: Reshape parameters
-    # bigα = ...
+     bigα =  [reshape(α, K, J-1) zeros(K)]
+    
+    # Compute choice probabilities
+     #P = exp.(X*bigα) ./ sum.(eachrow(exp.(X*bigα))) #might not need
     
     # TODO: Simulate D datasets and accumulate frequencies
     Random.seed!(1234)  # For reproducibility
-    # for d = 1:D
-    #     # Draw Gumbel shocks
-    #     # ε = ...
-    #     
-    #     # Generate simulated choices
-    #     # ỹ = argmax_j(X*bigα + ε)
-    #     # ỹ = ...
-    #     
-    #     # Update frequency counts
-    #     # for j = 1:J
-    #     #     bigỸ[:,j] .+= (ỹ .== j) * (1/D)
-    #     # end
-    # end
+     for d = 1:D
+         # Draw Gumbel shocks
+          ε = rand(Gumbel(0,1), N, J)
+         
+         # Generate simulated choices
+         # ỹ = argmax_j(X*bigα + ε)
+          ỹ = argmax.(eachrow(X*bigα .+ ϵ))
+         
+         # Update frequency counts
+          for j = 1:J
+              bigỸ[:,j] .+= (ỹ .== j) * (1/D)
+          end
+     end
     
     # TODO: Compute moment vector (actual - simulated frequencies)
-    # g = bigY[:] .- bigỸ[:]
+     g = bigY[:] .- bigỸ[:]
     
     # TODO: Compute objective function
-    # J = ...
+     J = dot(g, g)
     
     return J
 end
@@ -390,7 +401,7 @@ function main()
      println("GMM estimates: ", β_hat_gmm.minimizer)
      println("OLS estimates: ", β_ols)
     
-     
+    
     #--------------------------------------------------------------------------
     # Question 2: Multinomial Logit via MLE and GMM
     #--------------------------------------------------------------------------
@@ -399,6 +410,10 @@ function main()
     println("="^80)
     
     # TODO: Get starting values from series of binary logits
+    # Initialize svals matrix to store coefficients (4 coefficients x 7 occupations)
+    # Assuming 4 coefficients: intercept + age + white + collgrad
+    svals = zeros(4, 7)
+    
     # Create dummy variables for each occupation
      for j = 1:7
          tempname = Symbol(string("occ", j))
@@ -414,25 +429,23 @@ function main()
      α_hat_mle = optimize(a -> mlogit_mle(a, X, y), 
                           svals, 
                           LBFGS(), 
-                          Optim.Options(g_tol=1e-5, iterations=100_000, show_trace=true))
-    
-    println("MLE estimates: ", α_hat_minimizer)
-    
-    # TODO: Estimate via GMM using MLE estimates as starting values
+                          Optim.Options(g_tol=1e-5, iterations=100, show_trace=true))
+
+    println("MLE estimates: ", α_hat_mle.minimizer)    # TODO: Estimate via GMM using MLE estimates as starting values
      α_hat_gmm_mle_start = optimize(a -> mlogit_gmm_overid(a, X, y), 
                                      α_hat_mle.minimizer, 
                                      LBFGS(), 
                                      Optim.Options(g_tol=1e-5, iterations= 30, show_trace=true))
 
-    println("GMM estimates: ", α_hat_mle_start.minimizer)
+    println("GMM estimates: ", α_hat_gmm_mle_start.minimizer)
         
     # Estimate via GMM using random starting values
      α_hat_gmm_random_start = optimize(a -> mlogit_gmm_overid(a, X, y), 
                                         rand(length(svals)), 
                                         LBFGS(), 
-                                        Optim.Options(g_tol=1e-5, iterations=100_000, show_trace=true))
+                                        Optim.Options(g_tol=1e-5, iterations=100, show_trace=true))
     
-    Println("Random start GMM estimates: ", α_hat_random_start.minimizer)
+    println("Random start GMM estimates: ", α_hat_gmm_random_start.minimizer)
 
 
     # TODO: Compare estimates and objective function values
@@ -446,13 +459,17 @@ function main()
     println("="^80)
     
     # TODO: Simulate data
-    # ySim, XSim = sim_logit(100_000, 4)
+     ySim, XSim = sim_logit(100, 4)
     
+
+     println(minimum(ySim), maximum(ySim,))
+     println(mean(XSim; dims = 1))
+
     # TODO: Estimate parameters from simulated data
     # α_hat_sim = optimize(a -> mlogit_mle(a, XSim, ySim), 
     #                      rand(9),  # 3 covariates × 3 non-base alternatives
     #                      LBFGS(), 
-    #                      Optim.Options(...))
+    #                      Optim.Options(g_tol = 1e-6, iterations = 100_000, show_trace = true))
     
     # TODO: Compare estimated parameters to true parameters
     # println("True β used in simulation:")
@@ -474,22 +491,22 @@ function main()
     # Note: This will be slow! Start with small D (like 100) for testing
     # Then increase to 1000-2000 for final estimates
     
-    # α_hat_smm = optimize(th -> mlogit_smm_overid(th, X, y, 100),  # Small D for testing
-    #                      α_hat_mle.minimizer,  # Use MLE as starting values
-    #                      LBFGS(), 
-    #                      Optim.Options(g_tol=1e-6, iterations=1000, show_trace=true))
+     α_hat_smm = optimize(th -> mlogit_smm_overid(th, X, y, 100),  # Small D for testing
+                          α_hat_mle.minimizer,  # Use MLE as starting values
+                          LBFGS(), 
+                          Optim.Options(g_tol=1e-6, iterations=1000, show_trace=true))
     
     # TODO: Compare SMM estimates to MLE and GMM estimates
-    # println("MLE estimates: ", α_hat_mle.minimizer)
-    # println("GMM estimates: ", α_hat_gmm_mle_start.minimizer)
-    # println("SMM estimates: ", α_hat_smm.minimizer)
+     println("MLE estimates: ", α_hat_mle.minimizer)
+     println("GMM estimates: ", α_hat_gmm_mle_start.minimizer)
+     println("SMM estimates: ", α_hat_smm.minimizer)
     
     println("\n" * "="^80)
     println("Estimation Complete!")
     println("="^80)
     
     # Return estimates for testing
-    # return β_hat_gmm, α_hat_mle, α_hat_gmm_mle_start, α_hat_gmm_random_start, α_hat_sim, α_hat_smm
+     return β_hat_gmm, α_hat_mle, α_hat_gmm_mle_start, α_hat_gmm_random_start, α_hat_sim, α_hat_smm
 end
 
 ################################################################################
