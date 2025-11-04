@@ -1,6 +1,4 @@
-using Random, LinearAlgebra, Statistics, Distributions
-using Optim, DataFrames, DataFramesMeta, CSV, HTTP, GLM
-using MultivariateStats, FreqTables, ForwardDiff
+using Random, LinearAlgebra, Statistics, Distributions, Optim, DataFrames, DataFramesMeta, CSV, HTTP, GLM, MultivariateStats, FreqTables, ForwardDiff
 
 cd(@__DIR__)
 
