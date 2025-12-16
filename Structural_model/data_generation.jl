@@ -24,7 +24,7 @@
 
 # Structural parameters used in the generator (fixed here)
 const ρ_gen   = 2.0
-const γ_g_gen = 0.15
+const γ_g_gen = 1.5
 const β_gen   = 0.2
 
 # encode as raw parameters for shared solver
@@ -37,7 +37,7 @@ const CRASH_PEAK = 7  # day with worst shock (-50%)
 
 # Crash shock distribution (used during crash period)
 const μ_s      = -0.40
-const σ_s      = 0.10
+const σ_s      = 0.2449
 const CRASH_SHOCK_DIST = LogNormal(μ_s, σ_s)
 
 # Extreme crash shock for peak day (roughly -50%)
@@ -56,12 +56,12 @@ const INIT_DIST   = truncated(Normal(init_h_mean, init_h_sd), H_MIN, H_MAX)
 ############################################################
 
 """
-    choice_probs(h, p_stay_grid)
+    choice_probs(h, s, p_stay_grid)
 
 Wrapper around shared interpolation for CCPs.
 """
-function choice_probs(h::Float64, p_stay_grid::Vector{Float64})
-    return choice_probs_continuous(h, p_stay_grid)
+function choice_probs(h::Float64, s::Int, p_stay_grid::AbstractMatrix{Float64})
+    return choice_probs_continuous(h, s, p_stay_grid)
 end
 
 ############################################################
@@ -72,31 +72,34 @@ end
     simulate_panel(p_stay_grid)
 
 Simulate N_accounts independent accounts over T days using
-P(stay | h) interpolated from p_stay_grid.
+P(stay | h, s) interpolated from p_stay_grid.
 
 Dynamics:
-  - At each t, draw action based on P(a | h_t).
+  - At each t, draw action based on P(a | h_t, s_t).
   - If action == "stay":
         h_{t+1} = clamp(h_t * ε_{t+1}, H_MIN, H_MAX)
-    with ε drawn from:
-        CRASH_SHOCK_DIST if t ∈ shock_days,
-        BASE_SHOCK_DIST  otherwise.
+    with ε drawn from regime-dependent distribution:
+        BASE_SHOCK_DIST if s=0 (normal),
+        CRASH_SHOCK_DIST if s=1 (crash).
   - If action == "deleverage":
         h_{t+1} = max(H_BAR, h_t).
+  - Regime transitions via Markov chain (π01, π10).
 """
-function simulate_panel(p_stay_grid::Vector{Float64})
+function simulate_panel(p_stay_grid::AbstractMatrix{Float64})
     Random.seed!(1234)
 
     account_ids = Int[]
     times       = Int[]
     hs          = Float64[]
     actions     = String[]
+    regimes     = Int[]
 
     for acc in 1:N_accounts
         h = rand(INIT_DIST)
+        s = 0  # Initialize in normal regime
 
         for t in 0:(T-1)
-            p_stay, p_del = choice_probs(h, p_stay_grid)
+            p_stay, p_del = choice_probs(h, s, p_stay_grid)
             u = rand()
             action = u < p_stay ? "stay" : "deleverage"
 
@@ -104,30 +107,31 @@ function simulate_panel(p_stay_grid::Vector{Float64})
             push!(times,       t)
             push!(hs,          h)
             push!(actions,     action)
+            push!(regimes,     s)
 
             if t == T - 1
                 break
             end
 
             if action == "stay"
-                # Determine shock based on crash period
-                if t >= CRASH_START && t <= CRASH_END
-                    if t == CRASH_PEAK
-                        # Peak crash day: -50% shock
-                        ε = PEAK_CRASH_SHOCK
-                    else
-                        # Other crash period days: random crash shocks
-                        ε = rand(CRASH_SHOCK_DIST)
-                    end
-                else
-                    # Normal days: base shock distribution
+                # Regime-dependent shock (based on CURRENT regime)
+                if s == 0
                     ε = rand(BASE_SHOCK_DIST)
+                else
+                    ε = rand(CRASH_SHOCK_DIST)
                 end
                 h = clamp(h * ε, H_MIN, H_MAX)
             elseif action == "deleverage"
                 h = max(H_BAR, h)
             else
                 error("Unknown action $action")
+            end
+            
+            # Regime transition (Markov chain)
+            if s == 0
+                s = rand() < π01_DEFAULT ? 1 : 0
+            else
+                s = rand() < π10_DEFAULT ? 0 : 1
             end
         end
     end
@@ -136,7 +140,8 @@ function simulate_panel(p_stay_grid::Vector{Float64})
         account_id = account_ids,
         t          = times,
         h          = hs,
-        action     = actions
+        action     = actions,
+        regime     = regimes
     )
 end
 
@@ -145,15 +150,18 @@ end
 ############################################################
 
 function main()
-    println("Solving value function on shared health grid...")
-    V, v_a = solve_value_function(θ_raw_gen, β_gen)
+    println("Solving value function on shared health grid with regimes...")
+    V, v_a = solve_value_function(θ_raw_gen, β_gen; use_quadrature=true)
     P_choice = choice_probabilities(v_a)
-    p_stay_grid = copy(@view P_choice[1, :])
+    p_stay_grid = copy(P_choice[1, :, :])  # Now a matrix: [h_index, regime_index]
 
     println("Value function solved.")
-    println("  V(H_MIN) = ", V[1],
-            ", V(H_BAR) ≈ ", interp1(H_GRID, V, H_BAR),
-            ", V(H_MAX) = ", V[end])
+    println("  V(H_MIN, s=0) = ", V[1, 1],
+            ", V(H_BAR, s=0) ≈ ", interp1(H_GRID, @view(V[:, 1]), H_BAR),
+            ", V(H_MAX, s=0) = ", V[end, 1])
+    println("  V(H_MIN, s=1) = ", V[1, 2],
+            ", V(H_BAR, s=1) ≈ ", interp1(H_GRID, @view(V[:, 2]), H_BAR),
+            ", V(H_MAX, s=1) = ", V[end, 2])
 
     println("Simulating panel data with crash period from t = $CRASH_START to $CRASH_END (peak at t = $CRASH_PEAK) ...")
     df = simulate_panel(p_stay_grid)

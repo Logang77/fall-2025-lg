@@ -1,210 +1,349 @@
 #!/usr/bin/env julia
 
 ############################################################
-# COMPARISON SCRIPT: Baseline vs Counterfactual
+# STRUCTURAL POLICY COMPARISON: Baseline vs Counterfactual
 #
-# Loads results from both scenarios and creates
-# side-by-side comparison figures.
+# Compares policies holding preferences fixed at baseline θ̂.
+# Only changes environment: crash arrival π01.
+#
+# Outputs:
+#   - policy functions P(del|h,s) under π01_base vs π01=0
+#   - value functions V(h,s) under π01_base vs π01=0
+#   - Δ policy and Δ value plots
 ############################################################
 
 # NOTE: Packages should be loaded in master script
+# Requires from master/ddc_utils.jl:
+#   H_GRID, H_MIN, H_MAX, H_BAR
+#   solve_value_function(θ_raw, β; π01=..., use_quadrature=true)
+#   choice_probabilities(v_a)
+#   transform_params(θ_raw)
+#   interp1(xgrid, ygrid, x)  (if you want empirical overlays)
+#   LOG_EPS (optional)
 
 ########################################################################
-# Paths
+# Paths / settings
 ########################################################################
 
-const DATA_BASELINE = joinpath(@__DIR__, "data", "data_panel.csv")
-const DATA_COUNTERFACTUAL = joinpath(@__DIR__, "data", "data_panel_counterfactual.csv")
-const FIGURES_PATH = joinpath(@__DIR__, "figures", "comparison")
+@isdefined(RESULTS_PATH) || (const RESULTS_PATH = joinpath(@__DIR__, "results", "baseline_estimates.csv"))
+
+# Optional: data only for descriptive overlays (not used for structural objects)
+@isdefined(DATA_BASELINE) || (const DATA_BASELINE = joinpath(@__DIR__, "data", "data_panel.csv"))
+@isdefined(DATA_COUNTERFACTUAL) || (const DATA_COUNTERFACTUAL = joinpath(@__DIR__, "data", "data_panel_counterfactual.csv"))
+
+@isdefined(FIGURES_PATH) || (const FIGURES_PATH = joinpath(@__DIR__, "figures", "comparison"))
+
+# Baseline crash arrival probability used in Step 3 environment
+@isdefined(PI01_BASE) || (const PI01_BASE = 0.50)
+
+# If baseline_estimates.csv contains β, we’ll use that; else default:
+@isdefined(BETA_DEFAULT) || (const BETA_DEFAULT = 0.20)
+
+# Empirical overlay binning
+@isdefined(N_BINS) || (const N_BINS = 20)
 
 ########################################################################
-# Load and prepare data
+# Helpers
 ########################################################################
 
-function load_comparison_data()
-    println("Loading baseline data...")
-    df_baseline = CSV.read(DATA_BASELINE, DataFrame)
-    
-    println("Loading counterfactual data...")
-    df_counterfactual = CSV.read(DATA_COUNTERFACTUAL, DataFrame)
-    
-    return df_baseline, df_counterfactual
-end
-
-########################################################################
-# Comparison plots
-########################################################################
-
-function plot_health_comparison(df_base::DataFrame, df_counter::DataFrame)
-    # Average health over time
-    avg_base = combine(groupby(df_base, :t), :h => mean => :avg_h)
-    avg_counter = combine(groupby(df_counter, :t), :h => mean => :avg_h)
-    sort!(avg_base, :t)
-    sort!(avg_counter, :t)
-    
-    p = plot(title = "Average Health: Baseline vs Counterfactual",
-             xlabel = "Time (t)",
-             ylabel = "Average Health Factor",
-             legend = :bottomright,
-             size = (1000, 600),
-             linewidth = 2.5)
-    
-    plot!(avg_base.t, avg_base.avg_h, 
-          label = "Baseline (with crash shocks)",
-          color = :blue,
-          linewidth = 2.5)
-    
-    plot!(avg_counter.t, avg_counter.avg_h,
-          label = "Counterfactual (pure random walk)",
-          color = :green,
-          linewidth = 2.5)
-    
-    # Mark crash shock days in baseline
-    crash_days = [25, 50, 75]
-    for day in crash_days
-        vline!([day], linestyle = :dash, color = :red, alpha = 0.3, label = "")
+function load_baseline_estimates(path::String)
+    df = CSV.read(path, DataFrame)
+    if nrow(df) < 1
+        error("No rows found in baseline estimates file: $path")
     end
-    
-    hline!([H_BAR], linestyle = :dot, color = :gray, alpha = 0.5, label = "H_BAR")
-    
+
+    # Prefer first row (you only have one β anyway)
+    row = df[1, :]
+
+    # Robust parsing: allow either θ_raw columns or ρ/γg
+    θ1 = hasproperty(row, :theta1) ? Float64(row.theta1) :
+         (hasproperty(row, Symbol("θ1")) ? Float64(row[Symbol("θ1")]) :
+          (hasproperty(row, :theta_raw_1) ? Float64(row.theta_raw_1) : NaN))
+
+    θ2 = hasproperty(row, :theta2) ? Float64(row.theta2) :
+         (hasproperty(row, Symbol("θ2")) ? Float64(row[Symbol("θ2")]) :
+          (hasproperty(row, :theta_raw_2) ? Float64(row.theta_raw_2) : NaN))
+
+    β  = hasproperty(row, :beta) ? Float64(row.beta) :
+         (hasproperty(row, Symbol("β")) ? Float64(row[Symbol("β")]) : BETA_DEFAULT)
+
+    # Fallback: if θ_raw columns not found but ρ/γ_g exist, reconstruct θ_raw = log(params)
+    if !isfinite(θ1) || !isfinite(θ2)
+        ρ  = hasproperty(row, :rho) ? Float64(row.rho) :
+             (hasproperty(row, Symbol("ρ")) ? Float64(row[Symbol("ρ")]) : NaN)
+        γg = hasproperty(row, :gamma_g) ? Float64(row.gamma_g) :
+             (hasproperty(row, :gamma_g_hat) ? Float64(row.gamma_g_hat) :
+              (hasproperty(row, Symbol("γ_g")) ? Float64(row[Symbol("γ_g")]) : NaN))
+
+        if !isfinite(ρ) || !isfinite(γg)
+            error("Could not find θ_raw or (ρ, γ_g) in $path. Columns = $(names(df))")
+        end
+        θ1, θ2 = log(ρ), log(γg)
+    end
+
+    θ_raw = [θ1, θ2]
+    return θ_raw, β
+end
+
+function solve_policy_value(θ_raw::Vector{Float64}, β::Float64; π01::Float64)
+    V, v_a = solve_value_function(θ_raw, β; π01=π01, use_quadrature=true)
+    P = choice_probabilities(v_a)  # [action, h_index, regime_index]
+    return V, P
+end
+
+# Descriptive: empirical deleveraging share by h-bin
+function empirical_delever_by_h(df::DataFrame)
+    # Ensure action is string labels
+    if eltype(df.action) <: Integer
+        # map 1->stay,2->deleverage if needed
+        act = df.action
+        df = copy(df)
+        df.action = map(a -> a == 2 ? "deleverage" : "stay", act)
+    end
+
+    bins = range(H_MIN, H_MAX, length=N_BINS+1)
+    centers = [(bins[i] + bins[i+1])/2 for i in 1:N_BINS]
+    shares = fill(NaN, N_BINS)
+    counts = zeros(Int, N_BINS)
+
+    for r in eachrow(df)
+        h = Float64(r.h)
+        b = searchsortedlast(bins, h)
+        b = clamp(b, 1, N_BINS)
+        counts[b] += 1
+    end
+
+    delever_counts = zeros(Int, N_BINS)
+    for r in eachrow(df)
+        h = Float64(r.h)
+        b = searchsortedlast(bins, h)
+        b = clamp(b, 1, N_BINS)
+        delever_counts[b] += (r.action == "deleverage" ? 1 : 0)
+    end
+
+    for i in 1:N_BINS
+        if counts[i] > 0
+            shares[i] = delever_counts[i] / counts[i]
+        end
+    end
+
+    return centers, shares
+end
+
+########################################################################
+# Plotting
+########################################################################
+
+function plot_structural_policy_comparison(P_base, P_cf, β, π01_base)
     mkpath(FIGURES_PATH)
-    savefig(p, joinpath(FIGURES_PATH, "health_timeseries_comparison.png"))
-    println("  ✓ Saved: health_timeseries_comparison.png")
+
+    # P_del grids
+    Pdel_base_s0 = P_base[2, :, 1]
+    Pdel_base_s1 = P_base[2, :, 2]
+    Pdel_cf_s0   = P_cf[2, :, 1]
+    Pdel_cf_s1   = P_cf[2, :, 2]
+
+    p1 = plot(title = @sprintf("Structural Policy: P(delever|h) (β=%.2f)", β),
+              xlabel = "Health factor h", ylabel = "P(delever)",
+              legend = :topright, size = (1000, 650), linewidth = 2.5)
+
+    plot!(H_GRID, Pdel_base_s0, label = @sprintf("Baseline env (π01=%.2f), s=0", π01_base), linestyle=:solid)
+    plot!(H_GRID, Pdel_cf_s0,   label = "Counterfactual env (π01=0), s=0", linestyle=:dash)
+
+    plot!(H_GRID, Pdel_base_s1, label = @sprintf("Baseline env (π01=%.2f), s=1", π01_base), linestyle=:solid, alpha=0.6)
+    plot!(H_GRID, Pdel_cf_s1,   label = "Counterfactual env (π01=0), s=1", linestyle=:dash, alpha=0.6)
+
+    hline!([0.5], linestyle=:dot, alpha=0.5, label="0.5")
+    vline!([H_BAR], linestyle=:dot, alpha=0.5, label="H_BAR")
+
+    savefig(p1, joinpath(FIGURES_PATH, "policy_structural_comparison.png"))
+    println("  ✓ Saved: policy_structural_comparison.png")
+
+    # Δ policy
+    ΔP_s0 = Pdel_cf_s0 .- Pdel_base_s0
+    ΔP_s1 = Pdel_cf_s1 .- Pdel_base_s1
+
+    p2 = plot(title = @sprintf("Δ Policy: P_cf - P_base (β=%.2f)", β),
+              xlabel = "Health factor h", ylabel = "ΔP(delever)",
+              legend = :topright, size = (1000, 650), linewidth = 2.5)
+
+    plot!(H_GRID, ΔP_s0, label="ΔP, s=0", linestyle=:solid)
+    plot!(H_GRID, ΔP_s1, label="ΔP, s=1", linestyle=:dash)
+
+    hline!([0.0], linestyle=:dot, alpha=0.5, label="0")
+    vline!([H_BAR], linestyle=:dot, alpha=0.5, label="H_BAR")
+
+    savefig(p2, joinpath(FIGURES_PATH, "policy_delta_structural.png"))
+    println("  ✓ Saved: policy_delta_structural.png")
 end
 
-function plot_action_comparison(df_base::DataFrame, df_counter::DataFrame)
-    # Deleveraging rate over time
-    delever_base = combine(groupby(df_base, :t), 
-                          :action => (x -> mean(x .== "deleverage")) => :delever_rate)
-    delever_counter = combine(groupby(df_counter, :t),
-                             :action => (x -> mean(x .== "deleverage")) => :delever_rate)
-    sort!(delever_base, :t)
-    sort!(delever_counter, :t)
-    
-    # Filter to only t = 0 to t = 14
-    delever_base = filter(row -> row.t >= 0 && row.t <= 14, delever_base)
-    delever_counter = filter(row -> row.t >= 0 && row.t <= 14, delever_counter)
-    
-    p = plot(title = "Deleveraging Rate: Baseline vs Counterfactual",
-             xlabel = "Time (t)",
-             ylabel = "Share Deleveraging",
-             legend = :topright,
-             size = (1000, 600),
-             linewidth = 2.5,
-             xlims = (0, 14))
-    
-    plot!(delever_base.t, delever_base.delever_rate,
-          label = "Baseline (with crash shocks)",
-          color = :blue,
-          linewidth = 2.5,
-          alpha = 0.7)
-    
-    plot!(delever_counter.t, delever_counter.delever_rate,
-          label = "Counterfactual (pure random walk)",
-          color = :green,
-          linewidth = 2.5,
-          alpha = 0.7)
-    
-    savefig(p, joinpath(FIGURES_PATH, "delever_rate_comparison.png"))
-    println("  ✓ Saved: delever_rate_comparison.png")
+function plot_structural_value_comparison(V_base, V_cf, β, π01_base)
+    mkpath(FIGURES_PATH)
+
+    Vb_s0 = V_base[:, 1]; Vb_s1 = V_base[:, 2]
+    Vc_s0 = V_cf[:, 1];   Vc_s1 = V_cf[:, 2]
+
+    p1 = plot(title = @sprintf("Structural Value: V(h,s) (β=%.2f)", β),
+              xlabel = "Health factor h", ylabel = "V",
+              legend = :bottomright, size = (1000, 650), linewidth = 2.5)
+
+    plot!(H_GRID, Vb_s0, label=@sprintf("Baseline env (π01=%.2f), s=0", π01_base), linestyle=:solid)
+    plot!(H_GRID, Vc_s0, label="Counterfactual env (π01=0), s=0", linestyle=:dash)
+
+    plot!(H_GRID, Vb_s1, label=@sprintf("Baseline env (π01=%.2f), s=1", π01_base), linestyle=:solid, alpha=0.6)
+    plot!(H_GRID, Vc_s1, label="Counterfactual env (π01=0), s=1", linestyle=:dash, alpha=0.6)
+
+    vline!([H_BAR], linestyle=:dot, alpha=0.5, label="H_BAR")
+
+    savefig(p1, joinpath(FIGURES_PATH, "value_structural_comparison.png"))
+    println("  ✓ Saved: value_structural_comparison.png")
+
+    # Δ value
+    p2 = plot(title = @sprintf("Δ Value: V_cf - V_base (β=%.2f)", β),
+              xlabel = "Health factor h", ylabel = "ΔV",
+              legend = :topright, size = (1000, 650), linewidth = 2.5)
+
+    plot!(H_GRID, (Vc_s0 .- Vb_s0), label="ΔV, s=0", linestyle=:solid)
+    plot!(H_GRID, (Vc_s1 .- Vb_s1), label="ΔV, s=1", linestyle=:dash)
+
+    hline!([0.0], linestyle=:dot, alpha=0.5, label="0")
+    vline!([H_BAR], linestyle=:dot, alpha=0.5, label="H_BAR")
+
+    savefig(p2, joinpath(FIGURES_PATH, "value_delta_structural.png"))
+    println("  ✓ Saved: value_delta_structural.png")
 end
 
-function plot_distribution_comparison(df_base::DataFrame, df_counter::DataFrame)
-    # Health distribution comparison
-    p = plot(title = "Health Distribution: Baseline vs Counterfactual",
-             xlabel = "Health Factor h",
-             ylabel = "Density",
-             legend = :topright,
-             size = (1000, 600),
-             linewidth = 2.5)
-    
-    histogram!(df_base.h, bins=30, alpha=0.5, normalize=:pdf,
-               label = "Baseline (with crash shocks)",
-               color = :blue)
-    
-    histogram!(df_counter.h, bins=30, alpha=0.5, normalize=:pdf,
-               label = "Counterfactual (pure random walk)",
-               color = :green)
-    
-    vline!([H_BAR], linestyle = :dash, color = :gray, linewidth = 2, label = "H_BAR")
-    
-    savefig(p, joinpath(FIGURES_PATH, "health_distribution_comparison.png"))
-    println("  ✓ Saved: health_distribution_comparison.png")
+function plot_optional_empirical_overlays(P_base, P_cf)
+    # purely descriptive: empirical delever share by h in each dataset
+    if !isfile(DATA_BASELINE) || !isfile(DATA_COUNTERFACTUAL)
+        println("  (Skipping empirical overlays: data files not found.)")
+        return
+    end
+    df_base = CSV.read(DATA_BASELINE, DataFrame)
+    df_cf   = CSV.read(DATA_COUNTERFACTUAL, DataFrame)
+
+    centers_base, share_base = empirical_delever_by_h(df_base)
+    centers_cf,   share_cf   = empirical_delever_by_h(df_cf)
+
+    p = plot(title="Descriptive: Empirical delever share by h (datasets)",
+             xlabel="Health factor h", ylabel="Empirical share(delever)",
+             legend=:topright, size=(1000,650), linewidth=2.5)
+
+    scatter!(centers_base, share_base, label="Baseline data", alpha=0.7, markersize=6)
+    scatter!(centers_cf, share_cf, label="Counterfactual data", alpha=0.7, markersize=6)
+
+    vline!([H_BAR], linestyle=:dot, alpha=0.5, label="H_BAR")
+
+    savefig(p, joinpath(FIGURES_PATH, "empirical_delever_by_h.png"))
+    println("  ✓ Saved: empirical_delever_by_h.png")
 end
 
-function plot_health_by_action(df_base::DataFrame, df_counter::DataFrame)
-    # Health levels when actions are taken
-    p1 = plot(title = "Baseline: Health at Action",
-              xlabel = "Health Factor h",
-              ylabel = "Density",
-              legend = :topright,
-              size = (500, 500))
-    
-    histogram!(df_base[df_base.action .== "stay", :h], 
-               bins=30, alpha=0.5, normalize=:pdf,
-               label = "Stay", color = :blue)
-    histogram!(df_base[df_base.action .== "deleverage", :h],
-               bins=30, alpha=0.5, normalize=:pdf,
-               label = "Deleverage", color = :red)
-    
-    p2 = plot(title = "Counterfactual: Health at Action",
-              xlabel = "Health Factor h",
-              ylabel = "Density",
-              legend = :topright,
-              size = (500, 500))
-    
-    histogram!(df_counter[df_counter.action .== "stay", :h],
-               bins=30, alpha=0.5, normalize=:pdf,
-               label = "Stay", color = :blue)
-    histogram!(df_counter[df_counter.action .== "deleverage", :h],
-               bins=30, alpha=0.5, normalize=:pdf,
-               label = "Deleverage", color = :red)
-    
-    combined = plot(p1, p2, layout = (1, 2), size = (1200, 500))
-    savefig(combined, joinpath(FIGURES_PATH, "health_by_action_comparison.png"))
-    println("  ✓ Saved: health_by_action_comparison.png")
-end
+########################################################################
+# Numerical reporting
+########################################################################
 
-function print_summary_statistics(df_base::DataFrame, df_counter::DataFrame)
+function report_policy_value_differences(P_base, P_cf, V_base, V_cf, π01_base)
     println("\n" * "="^80)
-    println("  SUMMARY STATISTICS COMPARISON")
+    println("  NUMERICAL SUMMARY: Policy and Value Differences")
     println("="^80)
     
-    println("\n📊 BASELINE (with crash shocks):")
-    println("  Total observations:    $(nrow(df_base))")
-    println("  Deleverage rate:       $(round(100*mean(df_base.action .== "deleverage"), digits=2))%")
-    println("  Average health:        $(round(mean(df_base.h), digits=4))")
-    println("  Std dev health:        $(round(std(df_base.h), digits=4))")
-    println("  Min health:            $(round(minimum(df_base.h), digits=4))")
-    println("  Max health:            $(round(maximum(df_base.h), digits=4))")
+    # Extract deleveraging probabilities: P[2, :, :] corresponds to action 2 (deleverage)
+    Pdel_base_s0 = P_base[2, :, 1]
+    Pdel_base_s1 = P_base[2, :, 2]
+    Pdel_cf_s0   = P_cf[2, :, 1]
+    Pdel_cf_s1   = P_cf[2, :, 2]
     
-    println("\n📊 COUNTERFACTUAL (pure random walk):")
-    println("  Total observations:    $(nrow(df_counter))")
-    println("  Deleverage rate:       $(round(100*mean(df_counter.action .== "deleverage"), digits=2))%")
-    println("  Average health:        $(round(mean(df_counter.h), digits=4))")
-    println("  Std dev health:        $(round(std(df_counter.h), digits=4))")
-    println("  Min health:            $(round(minimum(df_counter.h), digits=4))")
-    println("  Max health:            $(round(maximum(df_counter.h), digits=4))")
+    # Compute differences
+    # ΔP(h) = P_π01=0.10(delever|h) - P_π01=0(delever|h) = P_base - P_cf
+    ΔP_s0 = Pdel_base_s0 .- Pdel_cf_s0
+    ΔP_s1 = Pdel_base_s1 .- Pdel_cf_s1
     
-    println("\n📈 DIFFERENCES:")
-    delever_diff = mean(df_base.action .== "deleverage") - mean(df_counter.action .== "deleverage")
-    health_diff = mean(df_base.h) - mean(df_counter.h)
+    # ΔV(h) = V_π01=0(h) - V_π01=0.10(h) = V_cf - V_base
+    ΔV_s0 = V_cf[:, 1] .- V_base[:, 1]
+    ΔV_s1 = V_cf[:, 2] .- V_base[:, 2]
     
-    @printf("  Δ Deleverage rate:     %+.2f%% (baseline - counterfactual)\n", 
-            100*delever_diff)
-    @printf("  Δ Average health:      %+.4f (baseline - counterfactual)\n", 
-            health_diff)
+    # Report policy differences
+    println("\n--- Policy Differences: ΔP(h) = P(π01=$(π01_base)) - P(π01=0) ---")
+    println("\nRegime s=0 (Normal):")
+    @printf("  Mean ΔP(h):    %9.6f\n", mean(ΔP_s0))
+    @printf("  Median ΔP(h):  %9.6f\n", median(ΔP_s0))
+    @printf("  Min ΔP(h):     %9.6f  (at h=%.4f)\n", minimum(ΔP_s0), H_GRID[argmin(ΔP_s0)])
+    @printf("  Max ΔP(h):     %9.6f  (at h=%.4f)\n", maximum(ΔP_s0), H_GRID[argmax(ΔP_s0)])
+    @printf("  Std ΔP(h):     %9.6f\n", std(ΔP_s0))
     
-    if delever_diff > 0
-        println("\n  → Crash shocks INCREASE deleveraging activity")
-    else
-        println("\n  → Crash shocks DECREASE deleveraging activity")
+    println("\nRegime s=1 (Crisis):")
+    @printf("  Mean ΔP(h):    %9.6f\n", mean(ΔP_s1))
+    @printf("  Median ΔP(h):  %9.6f\n", median(ΔP_s1))
+    @printf("  Min ΔP(h):     %9.6f  (at h=%.4f)\n", minimum(ΔP_s1), H_GRID[argmin(ΔP_s1)])
+    @printf("  Max ΔP(h):     %9.6f  (at h=%.4f)\n", maximum(ΔP_s1), H_GRID[argmax(ΔP_s1)])
+    @printf("  Std ΔP(h):     %9.6f\n", std(ΔP_s1))
+    
+    # Report value differences
+    println("\n--- Value Differences: ΔV(h) = V(π01=0) - V(π01=$(π01_base)) ---")
+    println("\nRegime s=0 (Normal):")
+    @printf("  Mean ΔV(h):    %9.6f\n", mean(ΔV_s0))
+    @printf("  Median ΔV(h):  %9.6f\n", median(ΔV_s0))
+    @printf("  Min ΔV(h):     %9.6f  (at h=%.4f)\n", minimum(ΔV_s0), H_GRID[argmin(ΔV_s0)])
+    @printf("  Max ΔV(h):     %9.6f  (at h=%.4f)\n", maximum(ΔV_s0), H_GRID[argmax(ΔV_s0)])
+    @printf("  Std ΔV(h):     %9.6f\n", std(ΔV_s0))
+    
+    println("\nRegime s=1 (Crisis):")
+    @printf("  Mean ΔV(h):    %9.6f\n", mean(ΔV_s1))
+    @printf("  Median ΔV(h):  %9.6f\n", median(ΔV_s1))
+    @printf("  Min ΔV(h):     %9.6f  (at h=%.4f)\n", minimum(ΔV_s1), H_GRID[argmin(ΔV_s1)])
+    @printf("  Max ΔV(h):     %9.6f  (at h=%.4f)\n", maximum(ΔV_s1), H_GRID[argmax(ΔV_s1)])
+    @printf("  Std ΔV(h):     %9.6f\n", std(ΔV_s1))
+    
+    # Table at selected h values
+    println("\n--- Values at Selected Health Levels ---")
+    h_selected = [1.0, 1.1, 1.25, 1.5, 1.75, 2.0]
+    
+    println("\nΔP(h) and ΔV(h) at selected h:")
+    println("─"^80)
+    @printf("%-8s | %-12s | %-12s | %-12s | %-12s\n", 
+            "h", "ΔP(h) s=0", "ΔP(h) s=1", "ΔV(h) s=0", "ΔV(h) s=1")
+    println("─"^80)
+    
+    for h_val in h_selected
+        # Interpolate values at h_val
+        ΔP_s0_h = interp1(H_GRID, ΔP_s0, h_val)
+        ΔP_s1_h = interp1(H_GRID, ΔP_s1, h_val)
+        ΔV_s0_h = interp1(H_GRID, ΔV_s0, h_val)
+        ΔV_s1_h = interp1(H_GRID, ΔV_s1, h_val)
+        
+        @printf("%-8.2f | %12.6f | %12.6f | %12.6f | %12.6f\n",
+                h_val, ΔP_s0_h, ΔP_s1_h, ΔV_s0_h, ΔV_s1_h)
     end
+    println("─"^80)
     
-    if health_diff < 0
-        println("  → Crash shocks LOWER average health levels")
+    # Concentration near liquidation analysis
+    println("\n--- Concentration Near Liquidation ---")
+    
+    # Low-health band: h ≤ 1.2
+    low_health_idx = H_GRID .<= 1.2
+    # High-health band: h ≥ 1.8
+    high_health_idx = H_GRID .>= 1.8
+    
+    if sum(low_health_idx) > 0 && sum(high_health_idx) > 0
+        println("\nAverage ΔP(h) by health band:")
+        println("  Low health (h ≤ 1.2):")
+        @printf("    s=0: %9.6f\n", mean(ΔP_s0[low_health_idx]))
+        @printf("    s=1: %9.6f\n", mean(ΔP_s1[low_health_idx]))
+        
+        println("  High health (h ≥ 1.8):")
+        @printf("    s=0: %9.6f\n", mean(ΔP_s0[high_health_idx]))
+        @printf("    s=1: %9.6f\n", mean(ΔP_s1[high_health_idx]))
+        
+        println("\nAverage ΔV(h) by health band:")
+        println("  Low health (h ≤ 1.2):")
+        @printf("    s=0: %9.6f\n", mean(ΔV_s0[low_health_idx]))
+        @printf("    s=1: %9.6f\n", mean(ΔV_s1[low_health_idx]))
+        
+        println("  High health (h ≥ 1.8):")
+        @printf("    s=0: %9.6f\n", mean(ΔV_s0[high_health_idx]))
+        @printf("    s=1: %9.6f\n", mean(ΔV_s1[high_health_idx]))
     else
-        println("  → Crash shocks RAISE average health levels")
+        println("  (Health bands not found in grid)")
     end
     
     println("\n" * "="^80)
@@ -216,24 +355,33 @@ end
 
 function main()
     println("="^80)
-    println("  SCENARIO COMPARISON: Baseline vs Counterfactual")
+    println("  STRUCTURAL COMPARISON: Policies under π01_base vs π01=0 (θ̂ fixed)")
     println("="^80)
-    
-    # Load data
-    df_base, df_counter = load_comparison_data()
-    
-    # Create comparison figures
-    println("\n📊 Creating comparison figures...")
-    plot_health_comparison(df_base, df_counter)
-    plot_action_comparison(df_base, df_counter)
-    plot_distribution_comparison(df_base, df_counter)
-    plot_health_by_action(df_base, df_counter)
-    
-    # Print statistics
-    print_summary_statistics(df_base, df_counter)
-    
-    println("\n✓ All comparison figures saved to: $FIGURES_PATH")
-    println("\n" * "="^80)
+
+    println("Loading baseline estimates: $RESULTS_PATH")
+    θ_raw_hat, β = load_baseline_estimates(RESULTS_PATH)
+    ρ_hat, γg_hat = transform_params(θ_raw_hat)
+    @printf("Using θ̂_raw = [%.4f, %.4f]  => ρ̂=%.4f, γ̂_g=%.4f, β=%.2f\n",
+            θ_raw_hat[1], θ_raw_hat[2], ρ_hat, γg_hat, β)
+
+    println("\nSolving baseline environment DP (π01 = $(PI01_BASE)) ...")
+    V_base, P_base = solve_policy_value(θ_raw_hat, β; π01=PI01_BASE)
+
+    println("Solving counterfactual environment DP (π01 = 0.0) ...")
+    V_cf, P_cf = solve_policy_value(θ_raw_hat, β; π01=0.0)
+
+    # Print numerical summary of differences
+    report_policy_value_differences(P_base, P_cf, V_base, V_cf, PI01_BASE)
+
+    println("\nCreating structural comparison figures...")
+    plot_structural_policy_comparison(P_base, P_cf, β, PI01_BASE)
+    plot_structural_value_comparison(V_base, V_cf, β, PI01_BASE)
+
+    println("\n(Optional) Creating descriptive empirical overlays...")
+    plot_optional_empirical_overlays(P_base, P_cf)
+
+    println("\n✓ All figures saved to: $FIGURES_PATH")
+    println("="^80)
 end
 
 main()

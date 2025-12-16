@@ -32,9 +32,9 @@ struct EstimationResult
     ρ::Float64
     γ_g::Float64
     loglik::Float64
-    V::Vector{Float64}
-    v_a::Matrix{Float64}
-    P_choice::Matrix{Float64}
+    V::Matrix{Float64}              # (N_GRID, N_REGIMES)
+    v_a::Array{Float64, 3}          # (N_ACTIONS, N_GRID, N_REGIMES)
+    P_choice::Array{Float64, 3}     # (N_ACTIONS, N_GRID, N_REGIMES)
     h_star::Float64
     se_ρ::Float64
     se_γ_g::Float64
@@ -50,11 +50,15 @@ function load_data(path::String)
     println("Columns found in CSV: ", names(df))
     println("Column types: ", eltype.(eachcol(df)))
 
-    # Map actions to Int: 1 = stay, 2 = deleverage
+    # Check for required columns
     if !("action" in names(df))
         error("Data must contain :action column. Found columns: $(names(df))")
     end
+    if !("regime" in names(df))
+        error("Data must contain :regime column. Found columns: $(names(df))")
+    end
 
+    # Map actions to Int: 1 = stay, 2 = deleverage
     if eltype(df.action) <: AbstractString
         df.action = map(a ->
             a == "stay"       ? 1 :
@@ -88,47 +92,52 @@ end
 ########################################################################
 
 """
-    loglikelihood(θ_raw, β, h_t, action_t)
+    loglikelihood(θ_raw, β, h_t, regime_t, action_t)
 
 θ_raw    :: Vector (raw parameters for [ρ, γ_g])
 β        :: discount factor
 h_t      :: Vector{Float64}, observed health factors
+regime_t :: Vector{Int},     observed regimes (0=normal, 1=crash)
 action_t :: Vector{Int},     observed actions (1=stay, 2=deleverage)
 
-Uses structural value function + CCPs on H_GRID and interpolates CCPs
-for each observed (h_t, action_t).
+Uses structural value function + CCPs on H_GRID × {0,1} and interpolates CCPs
+for each observed (h_t, regime_t, action_t).
 """
 function loglikelihood(θ_raw::AbstractVector{T},
                        β::Real,
                        h_t::AbstractVector{<:Real},
+                       regime_t::AbstractVector{Int},
                        action_t::AbstractVector{Int}) where T<:Real
 
     if !all(isfinite.(θ_raw)) || β <= 0.0 || β >= 1.0
         return -1e10
     end
 
-    # Solve structural DDC with shared transitions
-    V, v_a = solve_value_function(θ_raw, β)
+    # Solve structural DDC with regime transitions
+    V, v_a = solve_value_function(θ_raw, β; use_quadrature=true)
 
     if !all(isfinite.(V)) || !all(isfinite.(v_a))
         return -1e10
     end
 
-    P_choice = choice_probabilities(v_a)
-    p_stay_grid = collect(@view P_choice[1, :])
-    p_del_grid  = collect(@view P_choice[2, :])
+    P_choice = choice_probabilities(v_a)  # Now 3D: [action, h_index, regime_index]
 
     ll = 0.0
     N  = length(h_t)
 
     @inbounds for n in 1:N
         h = float(h_t[n])
+        s = regime_t[n]
         a = action_t[n]
 
+        # Interpolate CCP at (h, s)
+        p_stay_s = @view P_choice[1, :, s+1]
+        p_del_s  = @view P_choice[2, :, s+1]
+
         p = if a == 1
-            interp1(H_GRID, p_stay_grid, h)
+            interp1(H_GRID, p_stay_s, h)
         elseif a == 2
-            interp1(H_GRID, p_del_grid,  h)
+            interp1(H_GRID, p_del_s, h)
         else
             return -1e10
         end
@@ -151,13 +160,14 @@ end
 if !@isdefined(DDCProblem)
     struct DDCProblem
         h_t::Vector{Float64}
+        regime_t::Vector{Int}
         action_t::Vector{Int}
         β::Float64
     end
 end
 
 function negative_loglikelihood(θ_raw::AbstractVector{T}, prob::DDCProblem) where T<:Real
-    return -loglikelihood(θ_raw, prob.β, prob.h_t, prob.action_t)
+    return -loglikelihood(θ_raw, prob.β, prob.h_t, prob.regime_t, prob.action_t)
 end
 
 ########################################################################
@@ -165,7 +175,7 @@ end
 ########################################################################
 
 function create_all_figures(results::Vector{EstimationResult}, df::DataFrame, 
-                           h_t::Vector{Float64}, action_t::Vector{Int})
+                           h_t::Vector{Float64}, regime_t::Vector{Int}, action_t::Vector{Int})
     # 1. Policy Function (MOST IMPORTANT)
     plot_policy_function(results)
     
@@ -182,7 +192,7 @@ function create_all_figures(results::Vector{EstimationResult}, df::DataFrame,
     plot_transition_dynamics(results)
     
     # 6. Observed vs Predicted Actions
-    plot_observed_vs_predicted(results, h_t, action_t)
+    plot_observed_vs_predicted(results, h_t, regime_t, action_t)
     
     # 7. β-Sweep Comparative Statics
     plot_beta_comparative_statics(results)
@@ -209,16 +219,26 @@ function plot_policy_function(results::Vector{EstimationResult})
     
     colors = [:blue, :red, :green]
     for (idx, res) in enumerate(results)
-        p_delever = res.P_choice[2, :]
-        plot!(H_GRID, p_delever, 
-              label = @sprintf("β = %.2f", res.β),
-              color = colors[idx],
-              linewidth = 2.5)
+        # Plot both regimes
+        p_delever_normal = res.P_choice[2, :, 1]  # Normal regime (s=0)
+        p_delever_crash = res.P_choice[2, :, 2]   # Crash regime (s=1)
         
-        # Mark threshold
+        plot!(H_GRID, p_delever_normal, 
+              label = @sprintf("β = %.2f (normal)", res.β),
+              color = colors[idx],
+              linewidth = 2.5,
+              linestyle = :solid)
+        
+        plot!(H_GRID, p_delever_crash, 
+              label = @sprintf("β = %.2f (crash)", res.β),
+              color = colors[idx],
+              linewidth = 2.5,
+              linestyle = :dash)
+        
+        # Mark threshold (for normal regime)
         if !isnan(res.h_star)
             vline!([res.h_star], 
-                   label = @sprintf("h* (β=%.2f) = %.3f", res.β, res.h_star),
+                   label = @sprintf("h* (β=%.2f, normal) = %.3f", res.β, res.h_star),
                    linestyle = :dot, color = colors[idx], linewidth = 1.5)
         end
     end
@@ -238,10 +258,18 @@ function plot_value_function(results::Vector{EstimationResult})
     
     colors = [:blue, :red, :green]
     for (idx, res) in enumerate(results)
-        plot!(H_GRID, res.V, 
-              label = @sprintf("β = %.2f", res.β),
+        # Plot both regimes
+        plot!(H_GRID, res.V[:, 1], 
+              label = @sprintf("β = %.2f (normal)", res.β),
               color = colors[idx],
-              linewidth = 2.5)
+              linewidth = 2.5,
+              linestyle = :solid)
+        
+        plot!(H_GRID, res.V[:, 2], 
+              label = @sprintf("β = %.2f (crash)", res.β),
+              color = colors[idx],
+              linewidth = 2.5,
+              linestyle = :dash)
     end
     
     savefig(p, joinpath(FIGURES_PATH, "02_value_function.png"))
@@ -254,14 +282,15 @@ function plot_choice_specific_values(results::Vector{EstimationResult})
     plots_array = []
     
     for (idx, res) in enumerate(results)
-        p = plot(title = @sprintf("β = %.2f", res.β),
+        p = plot(title = @sprintf("β = %.2f (Normal Regime)", res.β),
                  xlabel = "Health Factor h",
                  ylabel = "Choice-Specific Value",
                  legend = :bottomright,
                  linewidth = 2.5)
         
-        plot!(H_GRID, res.v_a[1, :], label = "v(h, stay)", color = :blue, linewidth = 2.5)
-        plot!(H_GRID, res.v_a[2, :], label = "v(h, deleverage)", color = :red, linewidth = 2.5)
+        # Plot for normal regime (s=0)
+        plot!(H_GRID, res.v_a[1, :, 1], label = "v(h, stay)", color = :blue, linewidth = 2.5)
+        plot!(H_GRID, res.v_a[2, :, 1], label = "v(h, deleverage)", color = :red, linewidth = 2.5)
         
         # Mark threshold where curves cross
         if !isnan(res.h_star)
@@ -354,7 +383,7 @@ end
 
 # 6. Observed vs Predicted Actions
 function plot_observed_vs_predicted(results::Vector{EstimationResult}, 
-                                   h_t::Vector{Float64}, action_t::Vector{Int})
+                                   h_t::Vector{Float64}, regime_t::Vector{Int}, action_t::Vector{Int})
     # Use best-fit model
     best_res = results[argmax([r.loglik for r in results])]
     
@@ -367,7 +396,8 @@ function plot_observed_vs_predicted(results::Vector{EstimationResult},
     predicted_delever = zeros(n_bins)
     bin_counts = zeros(Int, n_bins)
     
-    p_delever_grid = best_res.P_choice[2, :]
+    # Average across regimes (weighted by empirical distribution)
+    p_delever_grid = mean(best_res.P_choice[2, :, :], dims=2)[:, 1]
     
     for (h, a) in zip(h_t, action_t)
         bin_idx = searchsortedlast(h_bins, h)
@@ -422,7 +452,8 @@ function plot_beta_comparative_statics(results::Vector{EstimationResult})
     
     colors = [:blue, :red, :green]
     for (idx, res) in enumerate(results)
-        plot!(H_GRID, res.P_choice[2, :], 
+        # Use normal regime (s=0) for comparative statics
+        plot!(H_GRID, res.P_choice[2, :, 1], 
               label = @sprintf("β = %.2f", res.β),
               color = colors[idx],
               linewidth = 2.5)
@@ -448,7 +479,8 @@ function plot_beta_comparative_statics(results::Vector{EstimationResult})
               marker = :circle,
               markersize = 8)
     
-    avg_rates = [mean(r.P_choice[2, :]) for r in results]
+    # Average across both regimes and all health levels
+    avg_rates = [mean(r.P_choice[2, :, :]) for r in results]
     plot!(betas, avg_rates, color = :red, linewidth = 2.5)
     
     combined = plot(p1, p2, p3, layout = (1, 3), size = (1500, 400))
@@ -486,8 +518,8 @@ function plot_simulated_paths(results::Vector{EstimationResult})
         for t in 2:T_sim
             h = h_path[t-1]
             
-            # Get optimal action probability
-            p_delever = interp1(H_GRID, res.P_choice[2, :], h)
+            # Get optimal action probability (use normal regime for simulation)
+            p_delever = interp1(H_GRID, res.P_choice[2, :, 1], h)
             action = rand() < p_delever ? 2 : 1
             
             if action == 2
@@ -519,9 +551,9 @@ function plot_shock_scenario(res::EstimationResult)
     crash_multiplier = 0.85  # 15% drop in health
     h_post_crash = [clamp(h * crash_multiplier, H_MIN, H_MAX) for h in h_pre_crash]
     
-    # CCPs before and after crash
-    p_delever_pre = [interp1(H_GRID, res.P_choice[2, :], h) for h in h_pre_crash]
-    p_delever_post = [interp1(H_GRID, res.P_choice[2, :], h) for h in h_post_crash]
+    # CCPs before and after crash (use normal regime)
+    p_delever_pre = [interp1(H_GRID, res.P_choice[2, :, 1], h) for h in h_pre_crash]
+    p_delever_post = [interp1(H_GRID, res.P_choice[2, :, 1], h) for h in h_post_crash]
     
     p1 = plot(title = "Policy Response to Crash",
               xlabel = "Health Factor h",
@@ -588,13 +620,18 @@ function print_final_summary(results::Vector{EstimationResult})
         @printf("  ρ   = %.4f  (risk penalty scale)\n", best_res.ρ)
         @printf("  γ_g = %.4f  (deleverage gas cost)\n", best_res.γ_g)
     end
-    @printf("  h*  = %.4f  (threshold health factor)\n", best_res.h_star)
+    if !isnan(best_res.h_star)
+        @printf("  50%% crossing (if exists) = %.4f\n", best_res.h_star)
+    else
+        println("  50% crossing (if exists) = none")
+    end
     @printf("  LL  = %.2f\n", best_res.loglik)
     
     println("\n📈 BEHAVIORAL INTERPRETATION:")
     println("  • Forward-looking behavior calibration:")
     for res in results
-        avg_delever_prob = mean(res.P_choice[2, :])
+        # Average across both regimes
+        avg_delever_prob = mean(res.P_choice[2, :, :])
         @printf("    - β=%.2f: Avg deleveraging probability = %.3f\n", 
                 res.β, avg_delever_prob)
     end
@@ -602,7 +639,11 @@ function print_final_summary(results::Vector{EstimationResult})
     println("\n  • Risk vs Gas Cost Trade-off:")
     @printf("    - Risk penalty dominates when (h̄-h)² > %.4f\n", 
             best_res.γ_g / best_res.ρ)
-    @printf("    - At threshold h*=%.3f, agents are indifferent\n", best_res.h_star)
+    if !isnan(best_res.h_star)
+        @printf("    - At 50%% crossing h*=%.3f, agents are indifferent\n", best_res.h_star)
+    else
+        println("    - No interior 50% crossing found (policy never crosses 0.5)")
+    end
     
     println("\n  • Policy Implications:")
     if best_res.β > 0.7
@@ -634,11 +675,14 @@ function main()
     df = load_data(DATA_PATH)
     println("Number of observations after filtering: $(nrow(df))")
 
-    # Extract (h_t, action_t) for likelihood
+    # Extract (h_t, regime_t, action_t) for likelihood
     h_t      = collect(Float64, df.h)
+    regime_t = collect(Int,     df.regime)
     action_t = collect(Int,     df.action)
 
     println("Shared state grid: N = $(length(H_GRID)), h ∈ [$(H_MIN), $(H_MAX)]")
+    println("Regime 0 count: ", sum(regime_t .== 0), " ($(round(100*mean(regime_t .== 0), digits=1))%)")
+    println("Regime 1 count: ", sum(regime_t .== 1), " ($(round(100*mean(regime_t .== 1), digits=1))%)")
 
     # Store results for all β values
     results = EstimationResult[]
@@ -648,7 +692,7 @@ function main()
         @printf("Estimating model for β = %.4f\n", β)
         println("===========================================================")
 
-        prob = DDCProblem(h_t, action_t, β)
+        prob = DDCProblem(h_t, regime_t, action_t, β)
 
         obj(θ) = negative_loglikelihood(θ, prob)
 
@@ -701,7 +745,7 @@ function main()
 
         # Calculate standard errors from Hessian
         println("\nCalculating standard errors...")
-        H = ForwardDiff.hessian(x -> -loglikelihood(x, β, h_t, action_t), θ_hat_raw)
+        H = ForwardDiff.hessian(x -> -loglikelihood(x, β, h_t, regime_t, action_t), θ_hat_raw)
         
         # Standard errors from inverse Hessian (Fisher information)
         try
@@ -731,22 +775,31 @@ function main()
         # Policy / thresholds for this β (enable convergence warnings for final computation)
         V_hat, v_a_hat     = solve_value_function(θ_hat_raw, β; warn_convergence=true)
         P_choice_hat       = choice_probabilities(v_a_hat)
-        p_stay_hat_grid    = @view P_choice_hat[1, :]
+        p_stay_hat_grid    = P_choice_hat[1, :, :]  # Matrix: (N_GRID, N_REGIMES)
 
-        h_star = approximate_threshold(p_stay_hat_grid; cutoff=0.5)
+        # Calculate threshold for normal regime (s=0)
+        h_star = approximate_threshold(p_stay_hat_grid, 0; cutoff=0.5)
 
         println("\nExample choice probabilities at a few grid points:")
+        println("  Normal regime (s=0):")
         for i in round.(Int, range(1, length(H_GRID); length=5))
             h    = H_GRID[i]
-            p_st = P_choice_hat[1, i]
-            p_dl = P_choice_hat[2, i]
-            @printf("  h = %.3f -> P(stay)=%.3f, P(delever)=%.3f\n", h, p_st, p_dl)
+            p_st = P_choice_hat[1, i, 1]
+            p_dl = P_choice_hat[2, i, 1]
+            @printf("    h = %.3f -> P(stay)=%.3f, P(delever)=%.3f\n", h, p_st, p_dl)
+        end
+        println("  Crash regime (s=1):")
+        for i in round.(Int, range(1, length(H_GRID); length=5))
+            h    = H_GRID[i]
+            p_st = P_choice_hat[1, i, 2]
+            p_dl = P_choice_hat[2, i, 2]
+            @printf("    h = %.3f -> P(stay)=%.3f, P(delever)=%.3f\n", h, p_st, p_dl)
         end
 
         if !isnan(h_star)
-            @printf("\nApproximate threshold h* where P(deleverage) ≈ 0.5: h* ≈ %.4f\n", h_star)
+            @printf("\n50%% crossing h* (normal regime) where P(deleverage) ≈ 0.5: h* ≈ %.4f\n", h_star)
         else
-            println("\nNo interior threshold with P(deleverage) ≈ 0.5 found on [H_MIN, H_MAX].")
+            println("\n50% crossing (if exists): none (policy never crosses 0.5 on grid)")
         end
 
         # Store result with standard errors
@@ -766,13 +819,66 @@ function main()
         println("  CREATING FIGURES")
         println("===========================================================")
         mkpath(FIGURES_PATH)
-        create_all_figures(results, df, h_t, action_t)
+        create_all_figures(results, df, h_t, regime_t, action_t)
         
         # Print final summary
         print_final_summary(results)
+        
+        # Save baseline estimates for counterfactual analysis
+        println("\n===========================================================")
+        println("  SAVING BASELINE ESTIMATES")
+        println("===========================================================")
+        save_baseline_estimates(results)
     end
 
     println("\nDone.")
+end
+
+########################################################################
+# 5. Save baseline estimates for structural counterfactual
+########################################################################
+
+function save_baseline_estimates(results::Vector{EstimationResult})
+    # Get best result by log-likelihood
+    best_idx = argmax([r.loglik for r in results])
+    best_res = results[best_idx]
+    
+    # Create results directory
+    results_dir = joinpath(@__DIR__, "results")
+    mkpath(results_dir)
+    
+    # Save to CSV
+    output_file = joinpath(results_dir, "baseline_estimates.csv")
+    
+    estimates_df = DataFrame(
+        beta = [best_res.β],
+        theta_1 = [best_res.θ_raw[1]],
+        theta_2 = [best_res.θ_raw[2]],
+        rho = [best_res.ρ],
+        gamma_g = [best_res.γ_g],
+        se_rho = [isnan(best_res.se_ρ) ? missing : best_res.se_ρ],
+        se_gamma_g = [isnan(best_res.se_γ_g) ? missing : best_res.se_γ_g],
+        loglik = [best_res.loglik],
+        h_star = [isnan(best_res.h_star) ? missing : best_res.h_star]
+    )
+    
+    CSV.write(output_file, estimates_df)
+    
+    println("✓ Baseline estimates saved to: $output_file")
+    println("\nSaved estimates (best fit by log-likelihood):")
+    println("  β = $(best_res.β)")
+    println("  θ̂ = [$(best_res.θ_raw[1]), $(best_res.θ_raw[2])]")
+    if !isnan(best_res.se_ρ) && !isnan(best_res.se_γ_g)
+        println("  ρ̂ = $(best_res.ρ) (SE: $(best_res.se_ρ))")
+        println("  γ̂_g = $(best_res.γ_g) (SE: $(best_res.se_γ_g))")
+    else
+        println("  ρ̂ = $(best_res.ρ)")
+        println("  γ̂_g = $(best_res.γ_g)")
+    end
+    h_star_str = isnan(best_res.h_star) ? "none" : @sprintf("%.4f", best_res.h_star)
+    println("  50% crossing (if exists): $h_star_str")
+    println("  LL = $(best_res.loglik)")
+    println("\nUse these estimates in structural_counterfactual.jl")
 end
 
 main()

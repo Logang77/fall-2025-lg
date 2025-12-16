@@ -27,7 +27,7 @@
 
 # Structural parameters used in the generator (fixed here)
 const ρ_gen   = 2.0
-const γ_g_gen = 0.15
+const γ_g_gen = 1.5
 const β_gen   = 0.2
 
 # encode as raw parameters for shared solver
@@ -41,17 +41,20 @@ const init_h_mean = 1.4
 const init_h_sd   = 0.25
 const INIT_DIST   = truncated(Normal(init_h_mean, init_h_sd), H_MIN, H_MAX)
 
+# COUNTERFACTUAL: No transitions to crash regime
+const π01_COUNTERFACTUAL = 0.0
+
 ############################################################
 # 2. CCP interpolation helper
 ############################################################
 
 """
-    choice_probs(h, p_stay_grid)
+    choice_probs(h, s, p_stay_grid)
 
 Wrapper around shared interpolation for CCPs.
 """
-function choice_probs(h::Float64, p_stay_grid::Vector{Float64})
-    return choice_probs_continuous(h, p_stay_grid)
+function choice_probs(h::Float64, s::Int, p_stay_grid::AbstractMatrix{Float64})
+    return choice_probs_continuous(h, s, p_stay_grid)
 end
 
 ############################################################
@@ -62,32 +65,35 @@ end
     simulate_panel(p_stay_grid)
 
 Simulate N_accounts independent accounts over T days using
-P(stay | h) interpolated from p_stay_grid.
+P(stay | h, s) interpolated from p_stay_grid.
 
-COUNTERFACTUAL: All shocks are drawn from BASE_SHOCK_DIST.
-No crash shocks applied.
+COUNTERFACTUAL: π01 = 0, so no transitions to crash regime.
+Regime-dependent shocks still apply if started in crash.
 
 Dynamics:
-  - At each t, draw action based on P(a | h_t).
+  - At each t, draw action based on P(a | h_t, s_t).
   - If action == "stay":
         h_{t+1} = clamp(h_t * ε_{t+1}, H_MIN, H_MAX)
-    with ε ~ BASE_SHOCK_DIST (LogNormal(μ=-0.0005, σ=0.06))
+    with ε from regime-dependent distribution.
   - If action == "deleverage":
         h_{t+1} = max(H_BAR, h_t).
+  - Regime transitions: π01 = 0 (counterfactual).
 """
-function simulate_panel(p_stay_grid::Vector{Float64})
+function simulate_panel(p_stay_grid::AbstractMatrix{Float64})
     Random.seed!(1234)  # Same seed for comparability
 
     account_ids = Int[]
     times       = Int[]
     hs          = Float64[]
     actions     = String[]
+    regimes     = Int[]
 
     for acc in 1:N_accounts
         h = rand(INIT_DIST)
+        s = 0  # Initialize in normal regime
 
         for t in 0:(T-1)
-            p_stay, p_del = choice_probs(h, p_stay_grid)
+            p_stay, p_del = choice_probs(h, s, p_stay_grid)
             u = rand()
             action = u < p_stay ? "stay" : "deleverage"
 
@@ -95,19 +101,31 @@ function simulate_panel(p_stay_grid::Vector{Float64})
             push!(times,       t)
             push!(hs,          h)
             push!(actions,     action)
+            push!(regimes,     s)
 
             if t == T - 1
                 break
             end
 
             if action == "stay"
-                # COUNTERFACTUAL: Always use BASE_SHOCK_DIST, no crash shocks
-                ε = rand(BASE_SHOCK_DIST)
+                # Regime-dependent shock
+                if s == 0
+                    ε = rand(BASE_SHOCK_DIST)
+                else
+                    ε = rand(CRASH_SHOCK_DIST)
+                end
                 h = clamp(h * ε, H_MIN, H_MAX)
             elseif action == "deleverage"
                 h = max(H_BAR, h)
             else
                 error("Unknown action $action")
+            end
+            
+            # COUNTERFACTUAL: π01 = 0 (no transitions to crash)
+            if s == 0
+                s = rand() < π01_COUNTERFACTUAL ? 1 : 0  # Will always stay at 0
+            else
+                s = rand() < π10_DEFAULT ? 0 : 1
             end
         end
     end
@@ -116,7 +134,8 @@ function simulate_panel(p_stay_grid::Vector{Float64})
         account_id = account_ids,
         t          = times,
         h          = hs,
-        action     = actions
+        action     = actions,
+        regime     = regimes
     )
 end
 
@@ -129,15 +148,18 @@ function main()
     println("  COUNTERFACTUAL DATA GENERATION (No Crash Shocks)")
     println("="^70)
     
-    println("\nSolving value function on shared health grid...")
-    V, v_a = solve_value_function(θ_raw_gen, β_gen)
+    println("Solving value function on shared health grid with regimes (COUNTERFACTUAL: π01=0)...")
+    V, v_a = solve_value_function(θ_raw_gen, β_gen; π01=π01_COUNTERFACTUAL, use_quadrature=true)
     P_choice = choice_probabilities(v_a)
-    p_stay_grid = copy(@view P_choice[1, :])
+    p_stay_grid = copy(P_choice[1, :, :])  # Matrix: [h_index, regime_index]
 
     println("Value function solved.")
-    println("  V(H_MIN) = ", V[1],
-            ", V(H_BAR) ≈ ", interp1(H_GRID, V, H_BAR),
-            ", V(H_MAX) = ", V[end])
+    println("  V(H_MIN, s=0) = ", V[1, 1],
+            ", V(H_BAR, s=0) ≈ ", interp1(H_GRID, @view(V[:, 1]), H_BAR),
+            ", V(H_MAX, s=0) = ", V[end, 1])
+    println("  V(H_MIN, s=1) = ", V[1, 2],
+            ", V(H_BAR, s=1) ≈ ", interp1(H_GRID, @view(V[:, 2]), H_BAR),
+            ", V(H_MAX, s=1) = ", V[end, 2])
 
     println("\n📊 Simulating panel data with PURE RANDOM WALK (no crash shocks)...")
     println("  Using BASE_SHOCK_DIST: LogNormal(μ=$MU, σ=$SIGMA)")
