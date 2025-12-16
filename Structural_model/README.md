@@ -1,7 +1,8 @@
 # Structural Model - Master Script Structure
 
 ## Credits
-Created by Logan Goin with the help of Claude and ChatGPT
+Created by Logan Goin with the help of Claude and ChatGPT.
+##
 As much as I dislike how AI comments code, I will admit that it did a pretty good job at taking my sloppy comments/code and making it intuitive and easy to follow. 
 All of this code was either written or maticulously checked by myself. Any time the code was updated or written by AI I took the code and ran it through the other AI to have it looked over as well as checked it myself (if ChatGPT wrote the code, I checked it as well as Claude and vice-versa). 
 
