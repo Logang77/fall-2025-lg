@@ -29,7 +29,7 @@ println("="^80)
 # ======================================================================
 # PACKAGE LOADING
 # ======================================================================
-println("\n📦 Loading packages...")
+println("\n[*] Loading packages...")
 
 using Random
 using Distributions
@@ -43,21 +43,21 @@ using LineSearches
 using Printf
 using ForwardDiff
 
-println("✓ All packages loaded")
+println("[*] All packages loaded")
 
 # ======================================================================
 # LOAD UTILITIES
 # ======================================================================
-println("\n🔧 Loading shared utilities (ddc_utils.jl)...")
+println("\n[*] Loading shared utilities (ddc_utils.jl)...")
 include("ddc_utils.jl")
-println("✓ Utilities loaded")
+println("[*] Utilities loaded")
 
 # ======================================================================
 # PRELIMINARY TESTS
 # ======================================================================
-println("\n" * "🧪"^40)
+println("\n" * "="^80)
 println("RUNNING PRELIMINARY TESTS")
-println("🧪"^40)
+println("="^80)
 
 println("\n[Test 1: Utility Functions and Value Function Solver]")
 println("-"^60)
@@ -75,7 +75,7 @@ try
     V, v_a = solve_value_function(θ_test, β_test; use_quadrature=true)
     
     # Check dimensions
-    println("\n  ✓ Value function solved successfully")
+    println("\n  [*] Value function solved successfully")
     println("    V dimensions: $(size(V))  (expected: (101, 2))")
     println("    v_a dimensions: $(size(v_a))  (expected: (2, 101, 2))")
     
@@ -91,7 +91,7 @@ try
     println("    V range (normal regime): [$(minimum(V[:,1])), $(maximum(V[:,1]))]")
     println("    V range (crash regime): [$(minimum(V[:,2])), $(maximum(V[:,2]))]")
     
-    println("\n  ✓ Test 1 PASSED: Utility functions working correctly")
+    println("\n  [*] Test 1 PASSED: Utility functions working correctly")
     
 catch e
     println("\n  ✗ Test 1 FAILED: $e")
@@ -115,7 +115,7 @@ try
     
     # Load and validate data
     df = CSV.read(data_path, DataFrame)
-    println("  ✓ Data file created: $data_path")
+    println("  [*] Data file created: $data_path")
     println("    Rows: $(nrow(df))")
     println("    Columns: $(names(df))")
     
@@ -143,7 +143,7 @@ try
     println("      - stay: $n_stay ($pct_stay%)")
     println("      - deleverage: $n_delev ($pct_delev%)")
     
-    println("\n  ✓ Test 2 PASSED: Data generation module working correctly")
+    println("\n  [*] Test 2 PASSED: Data generation module working correctly")
     
 catch e
     println("\n  ✗ Test 2 FAILED: $e")
@@ -170,11 +170,11 @@ try
     @assert occursin("load_data", est_content) "Missing load_data function"
     @assert occursin("loglikelihood", est_content) "Missing loglikelihood function"
     
-    println("  ✓ Estimation module structure verified")
+    println("  [*] Estimation module structure verified")
     println("    File: $est_path")
     println("    Key components found: EstimationResult, load_data, loglikelihood")
     
-    println("\n  ✓ Test 3 PASSED: Estimation module structure correct")
+    println("\n  [*] Test 3 PASSED: Estimation module structure correct")
     
 catch e
     println("\n  ✗ Test 3 FAILED: $e")
@@ -187,56 +187,56 @@ catch e
 end
 
 println("\n" * "="^80)
-println("  ✓✓✓ ALL PRELIMINARY TESTS PASSED ✓✓✓")
+println("  [***] ALL PRELIMINARY TESTS PASSED [***]")
 println("  Proceeding with full analysis...")
 println("="^80)
 
 # ======================================================================
 # STEP 1: GENERATE BASELINE DATA
 # ======================================================================
-println("\n" * "▶"^40)
+println("\n" * "="^80)
 println("STEP 1: Generating baseline data (with crash shocks)...")
-println("▶"^40)
+println("="^80)
 include("data_generation.jl")
-println("✓ Baseline data generation complete")
+println("[*] Baseline data generation complete")
 
 # ======================================================================
 # STEP 2: GENERATE COUNTERFACTUAL DATA
 # ======================================================================
-println("\n" * "▶"^40)
+println("\n" * "="^80)
 println("STEP 2: Generating counterfactual data (no crash shocks)...")
-println("▶"^40)
+println("="^80)
 include("data_generation_counterfactual.jl")
-println("✓ Counterfactual data generation complete")
+println("[*] Counterfactual data generation complete")
 
 # ======================================================================
 # STEP 3: ESTIMATE BASELINE MODEL
 # ======================================================================
-println("\n" * "▶"^40)
+println("\n" * "="^80)
 println("STEP 3: Estimating baseline model...")
-println("▶"^40)
+println("="^80)
 include("SM_twostate.jl")
-println("✓ Baseline estimation complete")
+println("[*] Baseline estimation complete")
 
 # ======================================================================
 # STEP 4: STRUCTURAL COUNTERFACTUAL ANALYSIS
 # ======================================================================
-println("\n" * "▶"^40)
+println("\n" * "="^80)
 println("STEP 4: Structural counterfactual (no crash arrival, π01=0)...")
 println("  Using baseline θ̂ from Step 3 (NO re-estimation)")
 println("  Solving value function with π01=0 to eliminate crash risk")
-println("▶"^40)
+println("="^80)
 include("SM_twostate_counterfactual.jl")
-println("✓ Structural counterfactual complete")
+println("[*] Structural counterfactual complete")
 
 # ======================================================================
 # STEP 5: COMPARE SCENARIOS
 # ======================================================================
-println("\n" * "▶"^40)
+println("\n" * "="^80)
 println("STEP 5: Comparing baseline vs counterfactual...")
-println("▶"^40)
+println("="^80)
 include("compare_scenarios.jl")
-println("✓ Comparison complete")
+println("[*] Comparison complete")
 
 # Print key scalar summaries from comparison
 println("\n📊 Key Scalar Summaries from Step 5:")
@@ -246,10 +246,10 @@ println("  (See full table and band analysis above)")
 # FINAL SUMMARY
 # ======================================================================
 println("\n" * "="^80)
-println("  ✓✓✓ ALL ANALYSIS COMPLETE ✓✓✓")
+println("  [***] ALL ANALYSIS COMPLETE [***]")
 println("="^80)
 
-println("\n📁 Output Structure:")
+println("\n[OUTPUT] Output Structure:")
 println("  Structural_model/")
 println("  ├── data/")
 println("  │   ├── data_panel.csv                              (baseline simulated data)")
@@ -286,7 +286,7 @@ println("          ├── delever_rate_comparison.png             (deleverage
 println("          ├── health_distribution_comparison.png      (h distributions compared)")
 println("          └── health_by_action_comparison.png         (h by action choice)")
 
-println("\n📊 Key Outputs:")
+println("\n[RESULTS] Key Outputs:")
 println("  • Estimated structural parameters (ρ, γ_g) with standard errors")
 println("  • Baseline estimates saved to: results/baseline_estimates.csv")
 println("  • Value functions V(h,s) for baseline (π01=0.50) and counterfactual (π01=0)")
@@ -296,19 +296,19 @@ println("  • Decision thresholds h* (indifference points)")
 println("  • Model fit statistics (log-likelihood)")
 println("  • STRUCTURAL counterfactual: same θ̂, different crash risk environment")
 
-println("\n✅ STRUCTURAL COUNTERFACTUAL COMPLETE")
+println("\n[***] STRUCTURAL COUNTERFACTUAL COMPLETE")
 println("  The counterfactual/ figures show policies under:")
 println("  • SAME preferences (baseline θ̂)")
 println("  • DIFFERENT environment (π01=0 instead of 0.50)")
 println("  This measures the causal effect of eliminating crash risk.")
 
-println("\n📖 Documentation:")
+println("\n[DOCS] Documentation:")
 println("  • CCP_DIAGNOSTIC_GUIDE.md - Full diagnostic methodology")
 println("  • QUICK_REFERENCE.md      - Quick troubleshooting guide")
 println("  • diagnose_ccps.jl        - Detailed CCP diagnostic tool")
 
 println("\n" * "="^80)
 println("Analysis complete! Check the figures/ directory for visualizations.")
-println("All tests passed ✓ | Data generated ✓ | Models estimated ✓ | Results compared ✓")
+println("All tests passed [*] | Data generated [*] | Models estimated [*] | Results compared [*]")
 println("With γ_g = 1.5, CCPs should show clearer preferences at high h values.")
 println("="^80)

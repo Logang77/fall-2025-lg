@@ -131,7 +131,7 @@ function plot_policy_function_counterfactual(β::Float64, P_choice::Array{Float6
     plot!(H_GRID, p_del_crash,  label=@sprintf("β=%.2f crash",  β), linestyle=:dash)
 
     savefig(p, joinpath(FIGURES_PATH, "01_policy_function_counterfactual.png"))
-    println("  ✓ Saved: 01_policy_function_counterfactual.png")
+    println("  [*] Saved: 01_policy_function_counterfactual.png")
 end
 
 function plot_value_function_counterfactual(β::Float64, V::Matrix{Float64})
@@ -146,7 +146,7 @@ function plot_value_function_counterfactual(β::Float64, V::Matrix{Float64})
     plot!(H_GRID, V[:,2], label=@sprintf("β=%.2f crash",  β), linestyle=:dash)
 
     savefig(p, joinpath(FIGURES_PATH, "02_value_function_counterfactual.png"))
-    println("  ✓ Saved: 02_value_function_counterfactual.png")
+    println("  [*] Saved: 02_value_function_counterfactual.png")
 end
 
 function plot_observed_vs_predicted_counterfactual(df::DataFrame, P_choice::Array{Float64,3}; β::Float64)
@@ -194,7 +194,7 @@ function plot_observed_vs_predicted_counterfactual(df::DataFrame, P_choice::Arra
     plot!(bin_centers, predicted, label=@sprintf("Model (β=%.2f)", β), linewidth=2.5)
 
     savefig(p, joinpath(FIGURES_PATH, "03_observed_vs_predicted_counterfactual.png"))
-    println("  ✓ Saved: 03_observed_vs_predicted_counterfactual.png")
+    println("  [*] Saved: 03_observed_vs_predicted_counterfactual.png")
 end
 
 function plot_health_timeseries_counterfactual(df::DataFrame)
@@ -213,7 +213,7 @@ function plot_health_timeseries_counterfactual(df::DataFrame)
     hline!([H_BAR], linestyle=:dash, color=:gray, alpha=0.5, label="H_BAR")
 
     savefig(p, joinpath(FIGURES_PATH, "04_health_timeseries_counterfactual.png"))
-    println("  ✓ Saved: 04_health_timeseries_counterfactual.png")
+    println("  [*] Saved: 04_health_timeseries_counterfactual.png")
 end
 
 ########################################################################

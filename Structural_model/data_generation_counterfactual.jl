@@ -170,9 +170,9 @@ function main()
     mkpath(data_dir)
     
     outpath = joinpath(data_dir, "data_panel_counterfactual.csv")
-    println("\n💾 Writing $outpath ...")
+    println("\n[*] Writing $outpath ...")
     CSV.write(outpath, df)
-    println("✓ Done. data_panel_counterfactual.csv written with $(nrow(df)) rows.")
+    println("[*] Done. data_panel_counterfactual.csv written with $(nrow(df)) rows.")
 
     # Create time series plot of average health
     println("\n📈 Creating time series plot of average health...")

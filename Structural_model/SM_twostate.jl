@@ -244,7 +244,7 @@ function plot_policy_function(results::Vector{EstimationResult})
     end
     
     savefig(p, joinpath(FIGURES_PATH, "01_policy_function.png"))
-    println("  ✓ Saved: 01_policy_function.png")
+    println("  [*] Saved: 01_policy_function.png")
 end
 
 # 2. Value Function V(h)
@@ -273,7 +273,7 @@ function plot_value_function(results::Vector{EstimationResult})
     end
     
     savefig(p, joinpath(FIGURES_PATH, "02_value_function.png"))
-    println("  ✓ Saved: 02_value_function.png")
+    println("  [*] Saved: 02_value_function.png")
 end
 
 # 3. Choice-Specific Value Functions v(h, a)
@@ -335,7 +335,7 @@ function plot_flow_utility_components(results::Vector{EstimationResult})
     vline!([H_BAR], label = "Target h̄", linestyle = :dot, color = :gray, linewidth = 1.5)
     
     savefig(p, joinpath(FIGURES_PATH, "04_flow_utility_components.png"))
-    println("  ✓ Saved: 04_flow_utility_components.png")
+    println("  [*] Saved: 04_flow_utility_components.png")
 end
 
 # 5. Transition Dynamics
@@ -378,7 +378,7 @@ function plot_transition_dynamics(results::Vector{EstimationResult})
     vline!([H_BAR], label = "Target h̄", linestyle = :dot, color = :orange, linewidth = 1.5)
     
     savefig(p, joinpath(FIGURES_PATH, "05_transition_dynamics.png"))
-    println("  ✓ Saved: 05_transition_dynamics.png")
+    println("  [*] Saved: 05_transition_dynamics.png")
 end
 
 # 6. Observed vs Predicted Actions
@@ -435,7 +435,7 @@ function plot_observed_vs_predicted(results::Vector{EstimationResult},
           linewidth = 2.5)
     
     savefig(p, joinpath(FIGURES_PATH, "06_observed_vs_predicted.png"))
-    println("  ✓ Saved: 06_observed_vs_predicted.png")
+    println("  [*] Saved: 06_observed_vs_predicted.png")
 end
 
 # 7. β-Sweep Comparative Statics
@@ -541,7 +541,7 @@ function plot_simulated_paths(results::Vector{EstimationResult})
     end
     
     savefig(p, joinpath(FIGURES_PATH, "08_simulated_paths.png"))
-    println("  ✓ Saved: 08_simulated_paths.png")
+    println("  [*] Saved: 08_simulated_paths.png")
 end
 
 # 10. Shock Scenario
